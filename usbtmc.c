@@ -21,6 +21,8 @@
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
+#define _DEBUG
+
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/fs.h>
@@ -412,6 +414,7 @@ static int usbtmc488_ioctl_read_stb(struct usbtmc_device_data *data,
 				void __user *arg)
 {
 	struct device *dev = &data->intf->dev;
+	int srq_asserted = 0;
 	u8 *buffer;
 	u8 tag;
 	__u8 stb;
@@ -420,14 +423,21 @@ static int usbtmc488_ioctl_read_stb(struct usbtmc_device_data *data,
 	dev_dbg(dev, "Enter ioctl_read_stb iin_ep_present: %d\n",
 		data->iin_ep_present);
 
+	srq_asserted = atomic_xchg(&data->srq_asserted, srq_asserted);
+	if (srq_asserted) {
+		/* a STB with SRQ is already received */
+		stb = data->bNotify2;
+		rv = copy_to_user(arg, &stb, sizeof(stb));
+		if (rv)
+			return -EFAULT;
+		return 0; /* TODO: need to return 1? */
+	}
+
 	buffer = kmalloc(8, GFP_KERNEL);
 	if (!buffer)
 		return -ENOMEM;
-
+	
 	atomic_set(&data->iin_data_valid, 0);
-
-	/* must issue read_stb before using poll or select */
-	atomic_set(&data->srq_asserted, 0);
 
 	rv = usb_control_msg(data->usb_dev,
 			usb_rcvctrlpipe(data->usb_dev, 0),
@@ -1548,7 +1558,11 @@ static void usbtmc_interrupt(struct urb *urb)
 				kill_fasync(&data->fasync,
 					SIGIO, POLL_IN);
 
+			data->bNotify1 = data->iin_buffer[0];
+			data->bNotify2 = data->iin_buffer[1];
+			atomic_set(&data->iin_data_valid, 1);
 			atomic_set(&data->srq_asserted, 1);
+			dev_dbg(dev, "srq received bTag %x stb %x\n", (unsigned)data->bNotify1, (unsigned)data->bNotify2);
 			wake_up_interruptible(&data->waitq);
 			goto exit;
 		}
