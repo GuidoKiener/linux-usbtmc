@@ -51,6 +51,25 @@ struct usbtmc_termchar
 	__u8 term_char_enabled; // bool
 } __attribute__ ((packed));
 
+struct usbtmc_header
+{
+	__u8  msgid;
+	__u8  tag;
+	__u8  inv_tag;
+	__u8  res1;
+	__u32 transfer_size;
+	__u8  attributes;
+	__u8  term_char;
+	__u8  res2[2];
+} __attribute__ ((packed));
+
+struct usbtmc_message
+{
+	struct usbtmc_header header;
+	void* message;
+} __attribute__ ((packed));
+
+
 /* Request values for USBTMC driver's ioctl entry point */
 #define USBTMC_IOC_NR			91
 #define USBTMC_IOCTL_INDICATOR_PULSE	_IO(USBTMC_IOC_NR, 1)
@@ -64,6 +83,10 @@ struct usbtmc_termchar
 #define USBTMC_IOCTL_SET_TIMEOUT 	_IOW(USBTMC_IOC_NR, 10, unsigned int)
 #define USBTMC_IOCTL_EOM_ENABLE	        _IOW(USBTMC_IOC_NR, 11, unsigned char)
 #define USBTMC_IOCTL_CONFIG_TERMCHAR	_IOW(USBTMC_IOC_NR, 12, struct usbtmc_termchar)
+
+#define USBTMC_IOCTL_WRITE			_IOW(USBTMC_IOC_NR, 13, struct usbtmc_message)
+#define USBTMC_IOCTL_READ			_IOWR(USBTMC_IOC_NR, 14, struct usbtmc_message)
+#define USBTMC_IOCTL_QUERY			_IOWR(USBTMC_IOC_NR, 15, struct usbtmc_message)
 
 #define USBTMC488_IOCTL_GET_CAPS	_IOR(USBTMC_IOC_NR, 17, unsigned char)
 #define USBTMC488_IOCTL_READ_STB	_IOR(USBTMC_IOC_NR, 18, unsigned char)
