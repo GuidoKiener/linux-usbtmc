@@ -21,8 +21,6 @@
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
-#define _DEBUG
-
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/fs.h>
@@ -434,6 +432,7 @@ static int usbtmc488_ioctl_read_stb(struct usbtmc_device_data *data,
 		/* a STB with SRQ is already received */
 		stb = data->bNotify2;
 		rv = copy_to_user(arg, &stb, sizeof(stb));
+		dev_dbg(dev, "stb:0x%02x with srq received %d\n",(unsigned)stb, rv);
 		if (rv)
 			return -EFAULT;
 		return 0; /* TODO: need to return 1? */
@@ -493,6 +492,7 @@ static int usbtmc488_ioctl_read_stb(struct usbtmc_device_data *data,
 	rv = copy_to_user(arg, &stb, sizeof(stb));
 	if (rv)
 		rv = -EFAULT;
+	dev_dbg(dev, "stb:0x%02x received %d\n",(unsigned)stb, rv);
 
  exit:
 	/* bump interrupt bTag */
@@ -979,7 +979,7 @@ static ssize_t usbtmc_ioctol_generic_io(struct usbtmc_device_data *data,
 	if (cmd == USBTMC_IOCTL_WRITE) {
 		size_t header_size = sizeof(msg.header);
 
-		dev_err(dev, "bulk out message: size(%u)\n", (unsigned)msg.header.transfer_size);
+		dev_dbg(dev, "bulk out message: size(%u)\n", (unsigned)msg.header.transfer_size);
 		memcpy(buffer, &msg.header, sizeof(msg.header));
 		//TODO: use correct message.header.transfer_size!
 
@@ -988,7 +988,7 @@ static ssize_t usbtmc_ioctol_generic_io(struct usbtmc_device_data *data,
 
 		while (remaining > 0) {
 			size_t this_part;
-			size_t i;
+
 			if (remaining > bufsize)
 				this_part = bufsize - header_size;
 			else
@@ -998,27 +998,16 @@ static ssize_t usbtmc_ioctol_generic_io(struct usbtmc_device_data *data,
 				retval = -EFAULT;
 				goto exit;
 			}
-
-			for ( i = header_size; i < (header_size + this_part); i++)
-			{
-				if ( buffer[i] == 0 ) {
-					retval = -EFAULT;
-					dev_err(dev, "send(error: index=%d)\n", (int)i); 
-					goto exit;
-				}
-			}
-			
+			//print_hex_dump(KERN_DEBUG, "usbtmc ", DUMP_PREFIX_NONE, 16, 1, &buffer[header_size], this_part, true);  
 			n_bytes = (header_size + this_part + 3) & ~3; /*roundup(header_size + this_part, 4);*/
-			dev_err(dev, "write(n:%u,h:%u,p:%u d:%u)\n", (unsigned)n_bytes,(unsigned)header_size,(unsigned)this_part,(unsigned)done);
-			//memset(buffer + header_size + this_part, 0, n_bytes - (header_size + this_part));
-			//dev_err(dev, "to n=%u send(%.*s)\n",(unsigned)n_bytes, (unsigned)this_part, &buffer[header_size]);
+			//dev_dbg(dev, "write(n:%u,h:%u,p:%u d:%u)\n", (unsigned)n_bytes,(unsigned)header_size,(unsigned)this_part,(unsigned)done);
 
 			retval = usb_bulk_msg(data->usb_dev,
 						usb_sndbulkpipe(data->usb_dev,
 								data->bulk_out),
 						buffer, n_bytes,
 						&actual, data->timeout);
-			dev_err(dev, "send(first:%x=%c pre %x=%c last %x=%c) count=%d\n", (unsigned)buffer[header_size],buffer[header_size], (unsigned)buffer[header_size + this_part-1],buffer[header_size + this_part-1], (unsigned)buffer[header_size + this_part-2],buffer[header_size + this_part-2], (int)n_bytes);
+
 			if (retval != 0) {
 				dev_err(dev, "Unable to send data, error %d\n", retval);
 				goto exit;
@@ -1026,7 +1015,7 @@ static ssize_t usbtmc_ioctol_generic_io(struct usbtmc_device_data *data,
 
 			if (retval != 0)
 				break;
-			dev_err(dev, "sent actual:%d\n", (int)actual);
+			dev_dbg(dev, "sent actual:%d\n", (int)actual);
 
 			if (n_bytes != actual) {
 				retval = -EFAULT;
@@ -1034,11 +1023,11 @@ static ssize_t usbtmc_ioctol_generic_io(struct usbtmc_device_data *data,
 			}
 
 			remaining -= this_part + header_size;
-			done += this_part + header_size;
-			header_size = 0; /* do not send more header data*/
+			done += this_part;
+			header_size = 0; /* no more header data to send */
 		}
 
-		retval = done;
+		retval = done + sizeof(msg.header);
 	}
 
 	if (cmd == USBTMC_IOCTL_QUERY) {
@@ -1147,7 +1136,7 @@ static ssize_t usbtmc_ioctol_generic_io(struct usbtmc_device_data *data,
 				done += this_part + header_size;
 				header_size = 0;
 
-				dev_err(&urb->dev->dev,
+				dev_dbg(&urb->dev->dev,
 					"%s received on ep%d%s sum=%u/%u\n",
 					current->comm,
 					usb_endpoint_num(&urb->ep->desc),
