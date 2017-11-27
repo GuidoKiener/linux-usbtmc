@@ -952,8 +952,6 @@ static ssize_t usbtmc_ioctol_generic_io(struct usbtmc_device_data *data,
 {
 	struct device *dev;
 	u8 *buffer;
-	int actual;
-	size_t n_bytes;
 	size_t done = 0; 
 	size_t remaining; // overflow on 32 bit system?
 	size_t bufsize = io_buffer_size; /* global buffer size */
@@ -976,63 +974,10 @@ static ssize_t usbtmc_ioctol_generic_io(struct usbtmc_device_data *data,
 		goto exit;
 	}
 
-	if (cmd == USBTMC_IOCTL_WRITE) {
-		size_t header_size = sizeof(msg.header);
-
-		dev_dbg(dev, "bulk out message: size(%u)\n", (unsigned)msg.header.transfer_size);
-		memcpy(buffer, &msg.header, sizeof(msg.header));
-		//TODO: use correct message.header.transfer_size!
-
-		remaining = msg.header.transfer_size + header_size;
-		done = 0;
-
-		while (remaining > 0) {
-			size_t this_part;
-
-			if (remaining > bufsize)
-				this_part = bufsize - header_size;
-			else
-				this_part = remaining - header_size;
-
-			if (copy_from_user(&buffer[header_size], (u8*)msg.message + done, this_part)) {
-				retval = -EFAULT;
-				goto exit;
-			}
-			//print_hex_dump(KERN_DEBUG, "usbtmc ", DUMP_PREFIX_NONE, 16, 1, &buffer[header_size], this_part, true);  
-			n_bytes = (header_size + this_part + 3) & ~3; /*roundup(header_size + this_part, 4);*/
-			//dev_dbg(dev, "write(n:%u,h:%u,p:%u d:%u)\n", (unsigned)n_bytes,(unsigned)header_size,(unsigned)this_part,(unsigned)done);
-
-			retval = usb_bulk_msg(data->usb_dev,
-						usb_sndbulkpipe(data->usb_dev,
-								data->bulk_out),
-						buffer, n_bytes,
-						&actual, data->timeout);
-
-			if (retval != 0) {
-				dev_err(dev, "Unable to send data, error %d\n", retval);
-				goto exit;
-			}
-
-			if (retval != 0)
-				break;
-			dev_dbg(dev, "sent actual:%d\n", (int)actual);
-
-			if (n_bytes != actual) {
-				retval = -EFAULT;
-				goto exit;
-			}
-
-			remaining -= this_part + header_size;
-			done += this_part;
-			header_size = 0; /* no more header data to send */
-		}
-
-		retval = done + sizeof(msg.header);
-	}
-
 	if (cmd == USBTMC_IOCTL_QUERY) {
 		struct api_context ctx;
 		struct urb *urb;
+		int actual;
 		unsigned long expire;
 		size_t header_size = sizeof(msg.header);
 		size_t requested_transfer_size;
@@ -1163,6 +1108,124 @@ free_urb:
 
 exit:
 	kfree(buffer);
+	return retval;
+}
+
+static ssize_t usbtmc_ioctol_generic_write(struct usbtmc_device_data *data, void __user *arg)
+{
+	struct device *dev;
+	u8 *buffer = NULL;
+	size_t n_bytes;
+	size_t done = 0;
+	size_t remaining; // overflow on 32 bit system?
+	size_t bufsize = (4096); /* page size  */
+	struct usbtmc_message msg;
+	size_t header_size = sizeof(msg.header);
+	struct api_context ctx;
+	struct urb *urb = NULL;
+	unsigned long expire;
+	int retval = 0;
+
+	// TODO mutex
+
+	if (data->zombie) 
+		return -ENODEV;
+
+	/* Get pointer to private data structure */
+	dev = &data->intf->dev;
+
+	if (copy_from_user(&msg, arg, sizeof(struct usbtmc_message)))
+		return -EFAULT;
+
+	dev_dbg(dev, "bulk out message: size(%u)\n", (unsigned)msg.header.transfer_size);
+	//memcpy(buffer, &msg.header, sizeof(msg.header));
+	//TODO: use correct message.header.transfer_size!
+
+	remaining = msg.header.transfer_size + header_size;
+	done = 0;
+
+	urb = usb_alloc_urb(0, GFP_KERNEL);
+	if (!urb) {
+		retval = -ENOMEM;
+		goto error;
+	}
+
+	buffer = usb_alloc_coherent(data->usb_dev, bufsize, GFP_KERNEL,
+		&urb->transfer_dma);
+	if (!buffer) {
+		retval = -ENOMEM;
+		goto error;
+	}
+
+	memcpy(buffer, &msg.header, sizeof(msg.header));
+	//TODO: use correct message.header.transfer_size!
+
+	while (remaining > 0) {
+		size_t this_part;
+
+		if (remaining > bufsize)
+			this_part = bufsize - header_size;
+		else
+			this_part = remaining - header_size;
+
+		if (copy_from_user(&buffer[header_size], (u8*)msg.message + done, this_part)) {
+			retval = -EFAULT;
+			goto error;
+		}
+		//print_hex_dump(KERN_DEBUG, "usbtmc ", DUMP_PREFIX_NONE, 16, 1, &buffer[header_size], this_part, true);  
+		n_bytes = (header_size + this_part + 3) & ~3; /*roundup(header_size + this_part, 4);*/
+		//dev_dbg(dev, "write(n:%u,h:%u,p:%u d:%u)\n", (unsigned)n_bytes,(unsigned)header_size,(unsigned)this_part,(unsigned)done);
+
+		init_completion(&ctx.done);
+
+		usb_fill_bulk_urb(urb, data->usb_dev,
+			usb_sndbulkpipe(data->usb_dev, data->bulk_out),
+			buffer, n_bytes,
+			usbtmc_blocking_completion, &ctx);
+		urb->transfer_flags |= URB_NO_TRANSFER_DMA_MAP;
+
+		retval = usb_submit_urb(urb, GFP_KERNEL); // TODO: do this only if data is really requested (size > 0)!
+		if (unlikely(retval)) {
+			// something went wrong
+			goto error;
+		}
+
+		expire = data->timeout ? msecs_to_jiffies(data->timeout) : MAX_SCHEDULE_TIMEOUT;
+		if (!wait_for_completion_timeout(&ctx.done, expire)) {
+			usb_kill_urb(urb);
+			retval = (ctx.status == -ENOENT ? -ETIMEDOUT : ctx.status);
+			dev_err(dev,
+				"%s timed out on ep%d%s len=%u/%u\n",
+				current->comm,
+				usb_endpoint_num(&urb->ep->desc),
+				usb_urb_dir_in(urb) ? "in" : "out",
+				urb->actual_length,
+				urb->transfer_buffer_length);
+			dev_err(dev, "Unable to send data, error %d\n", retval);
+			goto error; // TODO: return transfer-size even when timeout occurs!!!
+		}
+
+		dev_dbg(dev, "sent actual:%d\n", (int)urb->actual_length);
+
+		if (n_bytes != urb->actual_length) {
+			retval = -EFAULT;
+			goto error;
+		}
+
+		remaining -= this_part + header_size;
+		done += this_part;
+		header_size = 0; /* no more header data to send */
+	}
+
+	retval = done + sizeof(msg.header);
+
+error:
+	if (urb) {
+		usb_free_coherent(data->usb_dev, bufsize, buffer, urb->transfer_dma);
+		usb_free_urb(urb);
+	}
+
+//exit:
 	return retval;
 }
 
@@ -1683,6 +1746,9 @@ static long usbtmc_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		break;
 
 	case USBTMC_IOCTL_WRITE:
+		retval = usbtmc_ioctol_generic_write(data, (void __user *)arg);
+		break;
+
 	case USBTMC_IOCTL_QUERY:
 		retval = usbtmc_ioctol_generic_io(data, (void __user *)arg, cmd);
 		break;
