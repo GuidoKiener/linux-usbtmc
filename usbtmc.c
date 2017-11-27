@@ -1111,6 +1111,38 @@ exit:
 	return retval;
 }
 
+static void usbtmc_write_bulk_callback(struct urb *urb)
+{
+	struct device *dev;
+
+	dev = urb->context;
+
+	/* sync/async unlink faults aren't errors */
+	if (urb->status) {
+		if (!(urb->status == -ENOENT ||
+			urb->status == -ECONNRESET ||
+			urb->status == -ESHUTDOWN))
+			dev_err(dev,
+			"%s - nonzero write bulk status received: %d\n",
+			__func__, urb->status);
+
+		//spin_lock(&dev->err_lock); // TODO: see sample usb_skeleton.c skel_write_bulk_callback(..)
+		//dev->errors = urb->status; // TODO: summarize total sent and error!!!!
+		//spin_unlock(&dev->err_lock); // TODO:
+	}
+
+	dev_dbg(dev,
+		"%s - nonzero write bulk status received: %d\n",
+		__func__, urb->status);
+
+	/* TODO: sample says: free up our allocated buffer 
+	 * However it seems to be an error!!!
+	 * usb_free_coherent(urb->dev, urb->transfer_buffer_length,
+		urb->transfer_buffer, urb->transfer_dma);
+	*/
+	//up(&dev->limit_sem); TODO: used for async I/O
+}
+
 static ssize_t usbtmc_ioctol_generic_write(struct usbtmc_device_data *data, void __user *arg)
 {
 	struct device *dev;
@@ -1121,9 +1153,8 @@ static ssize_t usbtmc_ioctol_generic_write(struct usbtmc_device_data *data, void
 	size_t bufsize = (4096); /* page size  */
 	struct usbtmc_message msg;
 	size_t header_size = sizeof(msg.header);
-	struct api_context ctx;
 	struct urb *urb = NULL;
-	unsigned long expire;
+	struct usb_anchor submitted;
 	int retval = 0;
 
 	// TODO mutex
@@ -1143,6 +1174,8 @@ static ssize_t usbtmc_ioctol_generic_write(struct usbtmc_device_data *data, void
 
 	remaining = msg.header.transfer_size + header_size;
 	done = 0;
+
+	init_usb_anchor(&submitted);
 
 	urb = usb_alloc_urb(0, GFP_KERNEL);
 	if (!urb) {
@@ -1176,45 +1209,51 @@ static ssize_t usbtmc_ioctol_generic_write(struct usbtmc_device_data *data, void
 		n_bytes = (header_size + this_part + 3) & ~3; /*roundup(header_size + this_part, 4);*/
 		//dev_dbg(dev, "write(n:%u,h:%u,p:%u d:%u)\n", (unsigned)n_bytes,(unsigned)header_size,(unsigned)this_part,(unsigned)done);
 
-		init_completion(&ctx.done);
-
 		usb_fill_bulk_urb(urb, data->usb_dev,
 			usb_sndbulkpipe(data->usb_dev, data->bulk_out),
 			buffer, n_bytes,
-			usbtmc_blocking_completion, &ctx);
+			usbtmc_write_bulk_callback, dev);
 		urb->transfer_flags |= URB_NO_TRANSFER_DMA_MAP;
+		usb_anchor_urb(urb, &submitted);
 
-		retval = usb_submit_urb(urb, GFP_KERNEL); // TODO: do this only if data is really requested (size > 0)!
+		retval = usb_submit_urb(urb, GFP_KERNEL);
 		if (unlikely(retval)) {
+			usb_unanchor_urb(urb);
 			// something went wrong
 			goto error;
 		}
 
-		expire = data->timeout ? msecs_to_jiffies(data->timeout) : MAX_SCHEDULE_TIMEOUT;
-		if (!wait_for_completion_timeout(&ctx.done, expire)) {
-			usb_kill_urb(urb);
-			retval = (ctx.status == -ENOENT ? -ETIMEDOUT : ctx.status);
-			dev_err(dev,
-				"%s timed out on ep%d%s len=%u/%u\n",
-				current->comm,
-				usb_endpoint_num(&urb->ep->desc),
-				usb_urb_dir_in(urb) ? "in" : "out",
-				urb->actual_length,
-				urb->transfer_buffer_length);
-			dev_err(dev, "Unable to send data, error %d\n", retval);
-			goto error; // TODO: return transfer-size even when timeout occurs!!!
-		}
-
-		dev_dbg(dev, "sent actual:%d\n", (int)urb->actual_length);
-
-		if (n_bytes != urb->actual_length) {
-			retval = -EFAULT;
-			goto error;
-		}
+		usb_free_urb(urb);
+		urb = NULL; /* this urb will be released by anchor functions or by usb driver */
+		buffer = NULL;
 
 		remaining -= this_part + header_size;
 		done += this_part;
 		header_size = 0; /* no more header data to send */
+
+		if (remaining > 0) {
+			urb = usb_alloc_urb(0, GFP_KERNEL);
+			if (!urb) {
+				retval = -ENOMEM;
+				goto error;
+			}
+
+			buffer = usb_alloc_coherent(data->usb_dev, bufsize, GFP_KERNEL,
+				&urb->transfer_dma);
+			if (!buffer) {
+				retval = -ENOMEM;
+				goto error;
+			}
+		}
+	}
+
+	/* All urbs are on the fly */
+	// TODO: data->timeout ? data->timeout : MAX_SCHEDULE_TIMEOUT
+	if (!usb_wait_anchor_empty_timeout(&submitted, data->timeout)) {
+		usb_kill_anchored_urbs(&submitted);
+		retval = -ETIMEDOUT;
+		dev_dbg(dev, "Timeout while sending data!\n");
+		goto error; // TODO: cacluate and return transfer-size even when timeout occurs!!!
 	}
 
 	retval = done + sizeof(msg.header);
