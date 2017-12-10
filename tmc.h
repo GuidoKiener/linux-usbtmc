@@ -67,6 +67,7 @@ struct usbtmc_message
 {
 	struct usbtmc_header header;
 	void* message;
+	__u64 transferred; /* header + message size of received/written bytes */ 
 } __attribute__ ((packed));
 
 
@@ -84,9 +85,9 @@ struct usbtmc_message
 #define USBTMC_IOCTL_EOM_ENABLE	        _IOW(USBTMC_IOC_NR, 11, unsigned char)
 #define USBTMC_IOCTL_CONFIG_TERMCHAR	_IOW(USBTMC_IOC_NR, 12, struct usbtmc_termchar)
 
-#define USBTMC_IOCTL_WRITE			_IOW(USBTMC_IOC_NR, 13, struct usbtmc_message)
-#define USBTMC_IOCTL_READ			_IOWR(USBTMC_IOC_NR, 14, struct usbtmc_message)
-#define USBTMC_IOCTL_QUERY			_IOWR(USBTMC_IOC_NR, 15, struct usbtmc_message)
+#define USBTMC_IOCTL_WRITE		_IOWR(USBTMC_IOC_NR, 13, struct usbtmc_message)
+#define USBTMC_IOCTL_READ		_IOWR(USBTMC_IOC_NR, 14, struct usbtmc_message)
+#define USBTMC_IOCTL_QUERY		_IOWR(USBTMC_IOC_NR, 15, struct usbtmc_message)
 
 #define USBTMC488_IOCTL_GET_CAPS	_IOR(USBTMC_IOC_NR, 17, unsigned char)
 #define USBTMC488_IOCTL_READ_STB	_IOR(USBTMC_IOC_NR, 18, unsigned char)
