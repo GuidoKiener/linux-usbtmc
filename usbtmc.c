@@ -59,6 +59,12 @@ module_param(usb_timeout, uint,  S_IRUGO | S_IWUSR);
 MODULE_PARM_DESC(usb_timeout, "USB timeout in milliseconds");
 
 #define MAX_URBS_IN_FLIGHT	16
+
+// TODO: Remove
+#define USE_ALWAYS_NEW_URBS 1
+#define BULKSIZE 4096
+#define SNOOZE
+//#define SNOOZE {dev_dbg(dev, "line %u\n", __LINE__);}
 /*
  * Maximum number of read cycles to empty bulk in endpoint during CLEAR and
  * ABORT_BULK_IN requests. Ends the loop if (for whatever reason) a short
@@ -141,6 +147,9 @@ struct usbtmc_device_data {
 	u64 total_transfer_size;
 	int status;
 	struct usb_anchor anchor_ready;
+#if USE_ALWAYS_NEW_URBS == 0
+	struct usb_anchor anchor_free;
+#endif		
 	wait_queue_head_t wait_bulk_in;
 };
 #define to_usbtmc_data(d) container_of(d, struct usbtmc_device_data, kref)
@@ -472,7 +481,8 @@ static int usbtmc488_ioctl_read_stb(struct usbtmc_device_data *data,
 	}
 
 	if (data->iin_ep_present) {
-		rv = wait_event_interruptible_timeout(
+		//rv = wait_event_interruptible_timeout( // TODO: gk: usb_control_msg does not interrupt either!
+		rv = wait_event_timeout(
 			data->waitq,
 			atomic_read(&data->iin_data_valid) != 0,
 			data->timeout);
@@ -948,6 +958,43 @@ exit:
 	return retval;
 }
 
+#if USE_ALWAYS_NEW_URBS != 0
+static struct urb* usbtmc_create_urb(struct usbtmc_device_data *data)
+{
+	const size_t bufsize = BULKSIZE;
+	u8 *dmabuf = NULL;
+	struct urb *urb = usb_alloc_urb(0, GFP_KERNEL);
+	if (!urb) {
+		return NULL;
+	}
+
+#if 0	/* gk: preferred way is to use kmalloc. Or let's see if someone
+	 * finds a system where using dma buffer is a performance boost */
+	dmabuf = usb_alloc_coherent(data->usb_dev, bufsize, GFP_KERNEL,
+		&urb->transfer_dma);
+	if (!dmabuf) {
+		usb_free_urb(urb);
+		return NULL;
+	}
+
+	urb->transfer_buffer = dmabuf;
+	urb->transfer_buffer_length = bufsize;
+	urb->transfer_flags |= URB_NO_TRANSFER_DMA_MAP;
+#else
+	dmabuf = kmalloc( bufsize, GFP_KERNEL);
+	if (!dmabuf) {
+		usb_free_urb(urb);
+		return NULL;
+	}
+
+	urb->transfer_buffer = dmabuf;
+	urb->transfer_buffer_length = bufsize;
+	urb->transfer_flags |= URB_FREE_BUFFER;
+#endif	
+	return urb;
+}
+#endif
+
 static void usbtmc_read_bulk_cb(struct urb *urb)
 {
 	struct usbtmc_device_data *data = urb->context;
@@ -959,11 +1006,12 @@ static void usbtmc_read_bulk_cb(struct urb *urb)
 			status == -ECONNRESET ||
 			status == -ESHUTDOWN))
 			dev_err(&data->intf->dev,
-			"%s - nonzero write bulk status received: %d\n",
+			"%s - nonzero read bulk status received: %d\n",
 			__func__, status);
 
 		spin_lock(&data->err_lock); // TODO: see sample usb_skeleton.c skel_write_bulk_callback(..)
-		data->status = status;  // TODO: summarize total sent and error!!!!
+		if ( !data->status )
+			data->status = status;
 		// TODO: poison other urbs
 		spin_unlock(&data->err_lock); // TODO:
 	}
@@ -971,21 +1019,45 @@ static void usbtmc_read_bulk_cb(struct urb *urb)
 	spin_lock(&data->err_lock);
 	data->total_transfer_size += urb->actual_length;
 	//dev_dbg(&data->intf->dev, "%s - total size: %llu\n", __func__, data->total_transfer_size);
-	//list_add_tail(urb->urb_list, &data->urblist);
 	spin_unlock(&data->err_lock);
 	usb_anchor_urb(urb, &data->anchor_ready);
 
-	wake_up_interruptible(&data->wait_bulk_in);
+	//wake_up_interruptible(&data->wait_bulk_in);
+	wake_up(&data->wait_bulk_in);
 }
 
 static inline bool usbtmc_do_transfer(struct usbtmc_device_data *data)
 {
 	bool data_or_error;
-	spin_lock(&data->err_lock);
+	spin_lock_irq(&data->err_lock);
 	data_or_error = !usb_anchor_empty(&data->anchor_ready) || data->status;
-	//dev_dbg(&data->intf->dev, "%s: check returns %d\n", __func__, data_or_error);
-	spin_unlock(&data->err_lock);
+	spin_unlock_irq(&data->err_lock);
+	dev_dbg(&data->intf->dev, "%s: check returns %d\n", __func__, data_or_error);
 	return data_or_error;
+}
+
+static void usbtmc_query_bulk_cb(struct urb *urb)
+{
+	struct usbtmc_device_data *data = urb->context;
+
+	/* sync/async unlink faults aren't errors */
+	if (urb->status) {
+		if (!(urb->status == -ENOENT ||
+			urb->status == -ECONNRESET ||
+			urb->status == -ESHUTDOWN))
+			dev_err(&data->intf->dev,
+			"%s - nonzero query bulk status received: %d\n",
+			__func__, urb->status);
+
+		spin_lock(&data->err_lock); // TODO: see sample usb_skeleton.c skel_write_bulk_callback(..)
+		data->status = urb->status; // TODO: summarize total sent and error!!!!
+		spin_unlock(&data->err_lock); // TODO:
+		// TODO: abort bulk out
+	}
+#if USE_ALWAYS_NEW_URBS == 0
+	usb_anchor_urb(urb, &data->anchor_free);
+#endif		
+	
 }
 
 static ssize_t usbtmc_ioctl_generic_read(struct usbtmc_device_data *data,
@@ -994,13 +1066,13 @@ static ssize_t usbtmc_ioctl_generic_read(struct usbtmc_device_data *data,
 	struct device *dev;
 	u64 done = 0; 
 	size_t remaining; // overflow on 32 bit system?
-	size_t bufsize = PAGE_SIZE;
+	size_t bufsize = BULKSIZE;
 	struct usb_anchor submitted;
 	int retval = 0;
 	struct usbtmc_message msg;
 	size_t requested_transfer_size;
-	unsigned bufcnt = 1;
-	int actual;
+	//unsigned bufcnt = 1;
+	//int actual;
 	unsigned long expire;
 	size_t header_size = sizeof(msg.header);
 
@@ -1009,15 +1081,16 @@ static ssize_t usbtmc_ioctl_generic_read(struct usbtmc_device_data *data,
 	/* Get pointer to private data structure */
 	dev = &data->intf->dev;
 
-	put_user(done, &((struct usbtmc_message*)arg)->transferred);
+	if (put_user(done, &((struct usbtmc_message*)arg)->transferred))
+		return -EFAULT;
 	
 	if (data->zombie)
 		return -ENODEV;
 	
-	spin_lock(&data->err_lock);
+	spin_lock_irq(&data->err_lock);
 	data->total_transfer_size = 0;
 	data->status = 0;
-	spin_unlock(&data->err_lock);
+	spin_unlock_irq(&data->err_lock);
 	
 	if (copy_from_user( &msg, arg, sizeof(struct usbtmc_message)))
 		return -EFAULT;
@@ -1029,86 +1102,96 @@ static ssize_t usbtmc_ioctl_generic_read(struct usbtmc_device_data *data,
 		return 0; /* TODO: set transfer_size */
 	}
 
-	if (requested_transfer_size + header_size > bufsize)
-		bufcnt++; /* At least one buffer should be always ready to receive data */
+	//if (requested_transfer_size + header_size > bufsize)
+	//	bufcnt++; /* At least one buffer should be always ready to receive data */
 	
 	init_usb_anchor(&submitted); // TODO really needed
 
 	dev_dbg(dev, "bulk query message: size(%u)\n", (unsigned)msg.header.transfer_size);
 
-	while (bufcnt > 0) {
-		u8 *dmabuf = NULL;
-		struct urb *urb = usb_alloc_urb(0, GFP_KERNEL);
+	if (cmd == USBTMC_IOCTL_QUERY) {
+		u8* dmabuf = NULL;
+#if USE_ALWAYS_NEW_URBS != 0
+		struct urb *urb = usbtmc_create_urb(data);
+#else		
+		struct urb *urb = usb_get_from_anchor(&data->anchor_free);
+#endif	
 		if (!urb) {
 			retval = -ENOMEM;
 			// TODO: goto exit!!!!
 			goto error;
 		}
 
-		dmabuf = usb_alloc_coherent(data->usb_dev, bufsize, GFP_KERNEL,
-			&urb->transfer_dma);
-		if (!dmabuf) {
+		dmabuf = urb->transfer_buffer;
+
+		memcpy(dmabuf, &msg.header, sizeof(msg.header));
+		((struct usbtmc_header*)dmabuf)->transfer_size =
+			cpu_to_le32(msg.header.transfer_size);
+
+		usb_fill_bulk_urb(urb, data->usb_dev,
+			usb_sndbulkpipe(data->usb_dev, data->bulk_out),
+			dmabuf, sizeof(msg.header),
+			usbtmc_query_bulk_cb, data);
+
+		usb_anchor_urb( urb, &submitted );
+		retval = usb_submit_urb(urb, GFP_KERNEL);
+		if (unlikely(retval)) {
+			usb_unanchor_urb(urb);
+#if USE_ALWAYS_NEW_URBS == 0
+			usb_anchor_urb( urb, &data->anchor_free );
+#else
 			usb_free_urb(urb);
+#endif	
+			goto error;
+		}
+		usb_free_urb(urb);
+	}
+	
+	{
+		u8* dmabuf = NULL;
+#if USE_ALWAYS_NEW_URBS != 0
+		struct urb *urb = usbtmc_create_urb(data);
+#else		
+		struct urb *urb = usb_get_from_anchor(&data->anchor_free);
+#endif	
+		if (!urb) {
 			retval = -ENOMEM;
 			// TODO: goto exit!!!!
 			goto error;
 		}
-	
+
+		dmabuf = urb->transfer_buffer;
+		
 		usb_fill_bulk_urb(urb, data->usb_dev,
 			usb_rcvbulkpipe(data->usb_dev, data->bulk_in),
 			dmabuf, bufsize,
 			usbtmc_read_bulk_cb, data);
-		urb->transfer_flags |= URB_NO_TRANSFER_DMA_MAP;
 		
 		usb_anchor_urb( urb, &submitted );
-		retval = usb_submit_urb(urb, GFP_NOIO);
+		retval = usb_submit_urb(urb, GFP_KERNEL);
 		if (unlikely(retval)) {
+			usb_unanchor_urb(urb);
+#if USE_ALWAYS_NEW_URBS == 0
+			usb_anchor_urb( urb, &data->anchor_free );
+#else
 			usb_free_urb(urb);
+#endif	
 			goto error;
 		}
 		/* urb is anchored. We can release our refcount. */
 		usb_free_urb(urb);
-		bufcnt--;
 	}
 
 	remaining = msg.header.transfer_size + header_size;
-	done = 0;
-
-	if (cmd == USBTMC_IOCTL_QUERY) {
-		u8 *buffer = kmalloc(bufsize, GFP_KERNEL);
-		if (!buffer) {
-			retval = -ENOMEM;
-			goto error;
-		}
-
-		memcpy(buffer, &msg.header, sizeof(msg.header));
-		((struct usbtmc_header*)buffer)->transfer_size =
-			cpu_to_le32(msg.header.transfer_size);
-	
-		/* send request to receive data */
-		retval = usb_bulk_msg(data->usb_dev,
-					usb_sndbulkpipe(data->usb_dev,
-							data->bulk_out),
-					buffer, sizeof(msg.header),
-					&actual, data->timeout);
-
-		kfree(buffer);
-
-		if (retval != 0) {
-			if (retval < 0)
-				goto error;
-			retval = -EFAULT;
-			goto error;
-		}
-	}
 
 	while (remaining > 0) {
 		size_t this_part;
 		struct urb *urb = NULL;
 		
 		expire = data->timeout ? msecs_to_jiffies(data->timeout) : MAX_SCHEDULE_TIMEOUT;
-		//dev_dbg(dev, "%s: before wait time %lu\n", __func__, expire);
-		retval = wait_event_interruptible_timeout(
+		dev_dbg(dev, "%s: before wait time %lu\n", __func__, expire);
+		//retval = wait_event_interruptible_timeout(
+		retval = wait_event_timeout(
 			data->wait_bulk_in,
 			usbtmc_do_transfer(data),
 			expire);
@@ -1120,7 +1203,7 @@ static ssize_t usbtmc_ioctl_generic_read(struct usbtmc_device_data *data,
 			goto error; // TODO: calcuate and return transfer-size even when timeout occurs!!!
 		}
 
-		//dev_dbg(dev, "%s: wait returns %d\n", __func__, retval);
+		dev_dbg(dev, "%s: wait returns %d\n", __func__, retval);
 		
 		urb = usb_get_from_anchor(&data->anchor_ready);
 		if (!urb) {
@@ -1132,8 +1215,10 @@ static ssize_t usbtmc_ioctl_generic_read(struct usbtmc_device_data *data,
 			/* Receiving header */
 			if (urb->actual_length < sizeof(msg.header)) {
 				/* protocol violation: incomplete header */
+#if USE_ALWAYS_NEW_URBS	== 0
+				usb_anchor_urb( urb, &data->anchor_free );
+#endif				
 				usb_free_urb(urb);
-				urb = NULL;
 				retval = -EFAULT; // TODO: IO-Error
 				goto error;
 			}
@@ -1144,6 +1229,9 @@ static ssize_t usbtmc_ioctl_generic_read(struct usbtmc_device_data *data,
 			
 			if (msg.header.transfer_size > requested_transfer_size) {
 				/* protocol violation: more data than requested */
+#if USE_ALWAYS_NEW_URBS	== 0
+				usb_anchor_urb( urb, &data->anchor_free );
+#endif				
 				usb_free_urb(urb);
 				retval = -EFAULT;
 				goto error;
@@ -1153,8 +1241,49 @@ static ssize_t usbtmc_ioctl_generic_read(struct usbtmc_device_data *data,
 				/* less data than requested is ok! */
 				remaining -= requested_transfer_size - msg.header.transfer_size;
 			}
+			
+			/* Do we need a second buffer */
+			if (requested_transfer_size + header_size > bufsize) {
+				if ( msg.header.transfer_size + header_size > bufsize ) {
+					u8* dmabuf = NULL;
+#if USE_ALWAYS_NEW_URBS != 0
+					struct urb *urb = usbtmc_create_urb(data);
+#else		
+					struct urb *urb = usb_get_from_anchor(&data->anchor_free);
+#endif	
+					if (!urb) {
+						retval = -ENOMEM;
+						// TODO: goto exit!!!!
+						goto error;
+					}
+
+					dmabuf = urb->transfer_buffer;
+					
+					usb_fill_bulk_urb(urb, data->usb_dev,
+						usb_rcvbulkpipe(data->usb_dev, data->bulk_in),
+						dmabuf, bufsize,
+						usbtmc_read_bulk_cb, data);
+					
+					usb_anchor_urb( urb, &submitted );
+					retval = usb_submit_urb(urb, GFP_KERNEL);
+					if (unlikely(retval)) {
+						usb_unanchor_urb(urb);
+#if USE_ALWAYS_NEW_URBS == 0
+						usb_anchor_urb( urb, &data->anchor_free );
+#else
+						usb_free_urb(urb);
+#endif	
+						goto error;
+					}
+					/* urb is anchored. We can release our refcount. */
+					usb_free_urb(urb);
+				}
+			}
 
 			if (copy_to_user(arg, &msg, sizeof(msg))) {
+#if USE_ALWAYS_NEW_URBS	== 0
+				usb_anchor_urb( urb, &data->anchor_free );
+#endif				
 				usb_free_urb(urb);
 				retval = -EFAULT;
 				goto error;
@@ -1166,15 +1295,19 @@ static ssize_t usbtmc_ioctl_generic_read(struct usbtmc_device_data *data,
 		else
 			this_part = remaining - header_size;
 		
+		//print_hex_dump(KERN_DEBUG, "usbtmc ", DUMP_PREFIX_NONE, 16, 1, urb->transfer_buffer + header_size, this_part /*min(this_part,16)*/, true);  
 		// TODO: urb->transfer_buffer + header_size good style?
 		if (copy_to_user(msg.message + done, urb->transfer_buffer + header_size, this_part)) {
+#if USE_ALWAYS_NEW_URBS	== 0
+			usb_anchor_urb( urb, &data->anchor_free );
+#endif				
 			usb_free_urb(urb);
 			retval = -EFAULT;
 			goto error;
 		}
 
 		remaining -= this_part + header_size; // TODO: optimize arithmetic here ...
-		done += this_part + header_size;
+		done += this_part;
 		header_size = 0;
 
 #if 0
@@ -1184,48 +1317,53 @@ static ssize_t usbtmc_ioctl_generic_read(struct usbtmc_device_data *data,
 			usb_urb_dir_in(urb) ? "in" : "out",
 			(unsigned)done,(unsigned)msg.header.transfer_size); 
 #endif		
-		if (remaining > PAGE_SIZE) {
-#if 0			
-			u8 *dmabuf = usb_alloc_coherent(data->usb_dev, bufsize,
-				GFP_KERNEL, &urb->transfer_dma);
-			if (!dmabuf) {
-				usb_free_urb(urb);
-				retval = -ENOMEM;
-				// TODO: goto exit!!!!
-				goto error;
-			}
-			dev_dbg(dev, "%s: before fill\n", __func__);
-		
-			usb_fill_bulk_urb(urb, data->usb_dev,
-				usb_rcvbulkpipe(data->usb_dev, data->bulk_in),
-				dmabuf, bufsize,
-				usbtmc_read_bulk_cb, data);
-			urb->transfer_flags |= URB_NO_TRANSFER_DMA_MAP;
-#endif			
-			//dev_dbg(dev, "%s: before anchor\n", __func__);
+		if (remaining > BULKSIZE) {
+			dev_dbg(dev, "%s: before anchor\n", __func__);
 			usb_anchor_urb( urb, &submitted );
-			retval = usb_submit_urb(urb, GFP_NOIO); // TODO: do this only if data is really requested (size > 0)!
-			//dev_dbg(dev, "%s: before submit\n", __func__);
+			retval = usb_submit_urb(urb, GFP_KERNEL); // TODO: do this only if data is really requested (size > 0)!
+			dev_dbg(dev, "%s: before submit\n", __func__);
 			if (unlikely(retval)) {
 				// something went wrong TODO: kill coherent!
+				usb_unanchor_urb( urb );
+#if USE_ALWAYS_NEW_URBS	== 0
+				usb_anchor_urb( urb, &data->anchor_free );
+#endif				
 				usb_free_urb(urb);
 				goto error;
 			}
-			//dev_dbg(dev, "%s: after submit\n", __func__);
+			dev_dbg(dev, "%s: after submit\n", __func__);
+			usb_free_urb(urb);
 		}
-		usb_free_urb(urb);
-		//dev_dbg(dev, "%s: after usb_free_urb\n", __func__);
-		put_user(done, &((struct usbtmc_message*)arg)->transferred);
-		retval = done;
+		else {
+#if USE_ALWAYS_NEW_URBS	== 0
+			usb_anchor_urb( urb, &data->anchor_free );
+#endif				
+			usb_free_urb(urb);
+		}
+		dev_dbg(dev, "%s: after usb_free_urb\n", __func__);
+		if (put_user(done, &((struct usbtmc_message*)arg)->transferred))
+			retval = -EFAULT;
+		else
+			retval = sizeof(struct usbtmc_message);
 	}
 error:
 	dev_dbg(dev, "%s: before kill submitted urbs %d\n", __func__, retval);
 	usb_kill_anchored_urbs(&submitted);
-	//dev_dbg(dev, "%s: before kill ready urbs %d\n", __func__, retval);
-	usb_scuttle_anchored_urbs(&data->anchor_ready);
-	//dev_dbg(dev, "%s: after freeing ready urbs %d\n", __func__, retval);
+	
+	if (usb_get_from_anchor(&submitted)) {
+		dev_err(dev, "%s:  submitted list not free!\n", __func__);
+	}
+	do {
+		struct urb *urb = usb_get_from_anchor(&data->anchor_ready);
+		if (!urb)
+			break;
+#if USE_ALWAYS_NEW_URBS	== 0
+		usb_anchor_urb( urb, &data->anchor_free );
+#endif				
+		usb_free_urb(urb);
+	} while (1);
+	dev_dbg(dev, "%s: after freeing ready urbs %d\n", __func__, retval);
 
-	//retval = done; TODO: overflow???
 	return retval;
 }
 
@@ -1251,9 +1389,13 @@ static void usbtmc_write_bulk_cb(struct urb *urb)
 
 	spin_lock(&data->err_lock);
 	data->total_transfer_size += urb->actual_length; 
-	//dev_dbg(&data->intf->dev, "%s - write bulk total size: %llu\n",	__func__, data->total_transfer_size);
+	dev_dbg(&data->intf->dev, "%s - write bulk total size: %llu\n",	__func__, data->total_transfer_size);
 	spin_unlock(&data->err_lock);
 
+#if USE_ALWAYS_NEW_URBS == 0
+	usb_anchor_urb(urb, &data->anchor_free);
+#endif	
+	
 	/* TODO: sample says: free up our allocated buffer 
 	 * However this seems to be an error!!!
 	 * usb_free_coherent(urb->dev, urb->transfer_buffer_length,
@@ -1270,7 +1412,7 @@ static ssize_t usbtmc_ioctl_generic_write(struct usbtmc_device_data *data, void 
 	u64 done = 0;
 	size_t remaining; // overflow on 32 bit systems?
 	long   expire;
-	size_t bufsize = PAGE_SIZE;
+	size_t bufsize = BULKSIZE;
 	struct usbtmc_message msg;
 	size_t header_size = sizeof(msg.header);
 	struct urb *urb = NULL;
@@ -1279,15 +1421,16 @@ static ssize_t usbtmc_ioctl_generic_write(struct usbtmc_device_data *data, void 
 
 	/* mutex already locked */
 
-	put_user(done, &((struct usbtmc_message*)arg)->transferred);
+	if (put_user(done, &((struct usbtmc_message*)arg)->transferred))
+		return -EFAULT;
 	
 	if (data->zombie) 
 		return -ENODEV;
 
-	spin_lock(&data->err_lock);
+	spin_lock_irq(&data->err_lock);
 	data->total_transfer_size = 0;
 	data->status = 0;
-	spin_unlock(&data->err_lock);
+	spin_unlock_irq(&data->err_lock);
 	
 	/* Get pointer to private data structure */
 	dev = &data->intf->dev;
@@ -1303,23 +1446,28 @@ static ssize_t usbtmc_ioctl_generic_write(struct usbtmc_device_data *data, void 
 
 	init_usb_anchor(&submitted);
 
-	urb = usb_alloc_urb(0, GFP_KERNEL);
+#if USE_ALWAYS_NEW_URBS != 0
+	urb = usbtmc_create_urb(data);
+#else
+	urb = usb_get_from_anchor(&data->anchor_free);
+#endif	
 	if (!urb) {
 		retval = -ENOMEM;
 		goto error;
 	}
-
-	buffer = usb_alloc_coherent(data->usb_dev, bufsize, GFP_KERNEL,
-		&urb->transfer_dma);
-	if (!buffer) {
-		retval = -ENOMEM;
-		goto error;
-	}
-
+	
+	buffer = urb->transfer_buffer;
+	// test
+	if (copy_from_user(buffer, arg, sizeof(struct usbtmc_message)))
+		return -EFAULT;
+	SNOOZE
+	
 	memcpy(buffer, &msg.header, sizeof(msg.header));
 	((struct usbtmc_header*)buffer)->transfer_size =
 		cpu_to_le32(msg.header.transfer_size);
 
+	SNOOZE
+		
 	while (remaining > 0) {
 		size_t this_part;
 
@@ -1333,15 +1481,17 @@ static ssize_t usbtmc_ioctl_generic_write(struct usbtmc_device_data *data, void 
 			// TODO: coherent buffer
 			goto error;
 		}
+		SNOOZE
 		//print_hex_dump(KERN_DEBUG, "usbtmc ", DUMP_PREFIX_NONE, 16, 1, &buffer[header_size], this_part, true);  
 		n_bytes = (header_size + this_part + 3) & ~3; /*roundup(header_size + this_part, 4);*/
-		//dev_dbg(dev, "write(n:%u,h:%u,p:%u d:%u)\n", (unsigned)n_bytes,(unsigned)header_size,(unsigned)this_part,(unsigned)done);
+		dev_dbg(dev, "write(n:%u,h:%u,p:%u d:%u)\n", (unsigned)n_bytes,(unsigned)header_size,(unsigned)this_part,(unsigned)done);
 
 		usb_fill_bulk_urb(urb, data->usb_dev,
 			usb_sndbulkpipe(data->usb_dev, data->bulk_out),
 			buffer, n_bytes,
 			usbtmc_write_bulk_cb, data);
-		urb->transfer_flags |= URB_NO_TRANSFER_DMA_MAP;
+		//urb->transfer_flags |= URB_NO_TRANSFER_DMA_MAP;
+		SNOOZE
 
 		expire = data->timeout ? msecs_to_jiffies(data->timeout) : MAX_SCHEDULE_TIMEOUT;
 		retval = down_timeout(&data->limit_write_sem, expire);
@@ -1351,15 +1501,27 @@ static ssize_t usbtmc_ioctl_generic_write(struct usbtmc_device_data *data, void 
 			dev_dbg(dev, "Timeout while sending data!\n");
 			goto error; // TODO: calcuate and return transfer-size even when timeout occurs!!!
 		}
+		SNOOZE
 		
 		usb_anchor_urb(urb, &submitted);
 		retval = usb_submit_urb(urb, GFP_KERNEL);
 		if (unlikely(retval)) {
 			usb_unanchor_urb(urb);
+#if USE_ALWAYS_NEW_URBS != 0
+			usb_free_urb(urb);
+#else			
+			usb_anchor_urb(urb, &data->anchor_free);
+#endif		
 			// something went wrong
 			goto error;
 		}
+		SNOOZE
 
+		if (atomic_read(&urb->kref.refcount) <= 1) {
+			dev_err(dev, "refcount = %d!\n", atomic_read(&urb->kref.refcount));
+		}	
+		SNOOZE
+	
 		usb_free_urb(urb);
 		urb = NULL; /* this urb will be released by anchor functions or by usb driver */
 		buffer = NULL;
@@ -1370,20 +1532,21 @@ static ssize_t usbtmc_ioctl_generic_write(struct usbtmc_device_data *data, void 
 
 		if (remaining == 0)
 			break;
+		SNOOZE
 		
 		/* prepare next urb to send */
-		urb = usb_alloc_urb(0, GFP_KERNEL);
+#if USE_ALWAYS_NEW_URBS != 0
+		urb = usbtmc_create_urb(data);
+#else
+		urb = usb_get_from_anchor(&data->anchor_free);
+#endif	
 		if (!urb) {
 			retval = -ENOMEM;
 			goto error;
 		}
+		buffer = urb->transfer_buffer;
+		SNOOZE
 
-		buffer = usb_alloc_coherent(data->usb_dev, bufsize, GFP_KERNEL,
-			&urb->transfer_dma);
-		if (!buffer) {
-			retval = -ENOMEM;
-			goto error;
-		}
 	}
 
 	/* All urbs are on the fly */
@@ -1395,15 +1558,15 @@ static ssize_t usbtmc_ioctl_generic_write(struct usbtmc_device_data *data, void 
 		goto error; // TODO: cacluate and return transfer-size even when timeout occurs!!!
 	}
 
-	done += sizeof(msg.header);
-	put_user(done, &((struct usbtmc_message*)arg)->transferred);
-	
-	// TODO: check total transfer size!! can be greater then 2GB!
-	retval = done;
+	if(put_user(done, &((struct usbtmc_message*)arg)->transferred))
+		retval = -EFAULT;
+	else
+		retval = sizeof(struct usbtmc_message);
 
 error:
 	if (urb) {
-		usb_free_coherent(data->usb_dev, bufsize, buffer, urb->transfer_dma);
+		//usb_free_coherent(data->usb_dev, bufsize, buffer, urb->transfer_dma);
+		SNOOZE
 		usb_free_urb(urb);
 	}
 
@@ -2034,7 +2197,8 @@ static void usbtmc_interrupt(struct urb *urb)
 			data->bNotify1 = data->iin_buffer[0];
 			data->bNotify2 = data->iin_buffer[1];
 			atomic_set(&data->iin_data_valid, 1);
-			wake_up_interruptible(&data->waitq);
+			//wake_up_interruptible(&data->waitq);
+			wake_up(&data->waitq);
 			goto exit;
 		}
 		/* check for SRQ notification */
@@ -2048,7 +2212,8 @@ static void usbtmc_interrupt(struct urb *urb)
 			atomic_set(&data->iin_data_valid, 1);
 			atomic_set(&data->srq_asserted, 1);
 			dev_dbg(dev, "srq received bTag %x stb %x\n", (unsigned)data->bNotify1, (unsigned)data->bNotify2);
-			wake_up_interruptible(&data->waitq);
+			//wake_up_interruptible(&data->waitq);
+			wake_up(&data->waitq);
 			goto exit;
 		}
 		dev_warn(dev, "invalid notification: %x\n", data->iin_buffer[0]);
@@ -2080,6 +2245,10 @@ static void usbtmc_free_int(struct usbtmc_device_data *data)
 	usb_kill_urb(data->iin_urb);
 	kfree(data->iin_buffer);
 	usb_free_urb(data->iin_urb);
+	// TODO: free up free list
+#if USE_ALWAYS_NEW_URBS == 0
+	usb_scuttle_anchored_urbs(&data->anchor_free);
+#endif	
 	kref_put(&data->kref, usbtmc_delete);
 }
 
@@ -2119,6 +2288,9 @@ static int usbtmc_probe(struct usb_interface *intf,
 	atomic_set(&data->iin_data_valid, 0);
 	atomic_set(&data->srq_asserted, 0);
 	init_usb_anchor(&data->anchor_ready);
+#if USE_ALWAYS_NEW_URBS == 0
+	init_usb_anchor(&data->anchor_free);
+#endif	
 	init_waitqueue_head(&data->wait_bulk_in);
 
 	data->zombie = 0;
@@ -2196,6 +2368,46 @@ static int usbtmc_probe(struct usb_interface *intf,
 		retcode = sysfs_create_group(&intf->dev.kobj,
 					     &capability_attr_grp);
 
+#if USE_ALWAYS_NEW_URBS == 0
+	for (n = 0; n < MAX_URBS_IN_FLIGHT; n++) {
+		const size_t bufsize = BULKSIZE;
+		u8 *dmabuf = NULL;
+		struct urb *urb = usb_alloc_urb(0, GFP_KERNEL);
+		if (!urb) {
+			retcode = -ENOMEM;
+			break;
+		}
+
+#if 0		
+		dmabuf = usb_alloc_coherent(data->usb_dev, bufsize, GFP_KERNEL,
+			&urb->transfer_dma);
+		if (!dmabuf) {
+			usb_free_urb(urb);
+			retcode = -ENOMEM;
+			break;
+		}
+
+		urb->transfer_buffer = dmabuf;
+		urb->transfer_buffer_length = bufsize;
+		urb->transfer_flags |= URB_NO_TRANSFER_DMA_MAP | URB_FREE_BUFFER;
+#else
+		dmabuf = kmalloc( bufsize, GFP_KERNEL);
+		if (!dmabuf) {
+			usb_free_urb(urb);
+			retcode = -ENOMEM;
+			break;
+		}
+
+		urb->transfer_buffer = dmabuf;
+		urb->transfer_buffer_length = bufsize;
+		urb->transfer_flags |= URB_FREE_BUFFER;
+#endif	
+		usb_anchor_urb( urb, &data->anchor_free);
+		/* urb is anchored. We can release our refcount. */
+		usb_free_urb(urb);
+	}
+#endif		
+					     
 	if (data->iin_ep_present) {
 		/* allocate int urb */
 		data->iin_urb = usb_alloc_urb(0, GFP_KERNEL);
