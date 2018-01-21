@@ -51,6 +51,7 @@ struct usbtmc_termchar
 	__u8 term_char_enabled; // bool
 } __attribute__ ((packed));
 
+#if 0
 struct usbtmc_header
 {
 	__u8  msgid;
@@ -62,12 +63,13 @@ struct usbtmc_header
 	__u8  term_char;
 	__u8  res2[2];
 } __attribute__ ((packed));
+#endif
 
 struct usbtmc_message
 {
-	struct usbtmc_header header;
-	void* message;
-	__u64 transferred; /* header + message size of received/written bytes */ 
+	void* message; /* pointer to header and data */
+	__u64 transfer_size; /* size of bytes to transfer */
+	__u64 transferred; /* size of received/written bytes */ 
 } __attribute__ ((packed));
 
 

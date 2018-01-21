@@ -983,6 +983,7 @@ static void usbtmc_read_bulk_cb(struct urb *urb)
 	if (status) {
 		if (!(status == -ENOENT ||
 			status == -ECONNRESET ||
+			status == -EREMOTEIO || /* Short packet */
 			status == -ESHUTDOWN))
 			dev_err(&data->intf->dev,
 			"%s - nonzero read bulk status received: %d\n",
@@ -997,7 +998,8 @@ static void usbtmc_read_bulk_cb(struct urb *urb)
 
 	spin_lock(&data->err_lock);
 	data->total_transfer_size += urb->actual_length;
-	//dev_dbg(&data->intf->dev, "%s - total size: %llu\n", __func__, data->total_transfer_size);
+	dev_dbg(&data->intf->dev, "%s - total size: %llu current: %d status: %d\n",
+		__func__, data->total_transfer_size, urb->actual_length, status);
 	spin_unlock(&data->err_lock);
 	usb_anchor_urb(urb, &data->anchor_ready);
 
@@ -1015,6 +1017,7 @@ static inline bool usbtmc_do_transfer(struct usbtmc_device_data *data)
 	return data_or_error;
 }
 
+#if 0
 static void usbtmc_query_bulk_cb(struct urb *urb)
 {
 	struct usbtmc_device_data *data = urb->context;
@@ -1035,6 +1038,7 @@ static void usbtmc_query_bulk_cb(struct urb *urb)
 		// TODO: abort bulk out. How to tell user that bulk out message failed?
 	}
 }
+#endif
 
 static ssize_t usbtmc_ioctl_generic_read(struct usbtmc_device_data *data,
 				void __user *arg, unsigned int cmd)
@@ -1042,13 +1046,13 @@ static ssize_t usbtmc_ioctl_generic_read(struct usbtmc_device_data *data,
 	struct device *dev;
 	u64 done = 0; 
 	u64 remaining;
-	size_t bufsize = BULKSIZE;
+	const size_t bufsize = BULKSIZE;
 	struct usb_anchor submitted;
 	int retval = 0;
 	struct usbtmc_message msg;
 	u64 requested_transfer_size;
 	unsigned long expire;
-	size_t header_size = sizeof(msg.header);
+	int bufcount = 1;
 
 	/* mutex already locked */
 
@@ -1069,46 +1073,27 @@ static ssize_t usbtmc_ioctl_generic_read(struct usbtmc_device_data *data,
 	if (copy_from_user( &msg, arg, sizeof(struct usbtmc_message)))
 		return -EFAULT;
 
-	requested_transfer_size = msg.header.transfer_size;
+	requested_transfer_size = msg.transfer_size;
 	
 	if (requested_transfer_size == 0) {
 		/* Nothing to do? */
 		return 0;
 	}
 
+	if (requested_transfer_size > bufsize) {
+		/* round down to bufsize */
+		requested_transfer_size = 
+			roundup(requested_transfer_size + 1 - bufsize, bufsize);
+		if (requested_transfer_size > bufsize)
+			bufcount++;
+	}
+
 	init_usb_anchor(&submitted);
 
-	dev_dbg(dev, "%s: size=%u\n", __func__,	
-		(unsigned)msg.header.transfer_size);
+	dev_dbg(dev, "%s: requested=%llu size=%llu\n", __func__, 
+		(u64)msg.transfer_size, requested_transfer_size);
 
-	if (cmd == USBTMC_IOCTL_QUERY) {
-		u8* dmabuf = NULL;
-		struct urb *urb = usbtmc_create_urb(data);
-		if (!urb) {
-			retval = -ENOMEM;
-			goto error;
-		}
-
-		dmabuf = urb->transfer_buffer;
-
-		memcpy(dmabuf, &msg.header, sizeof(msg.header));
-		((struct usbtmc_header*)dmabuf)->transfer_size =
-			cpu_to_le32(msg.header.transfer_size);
-
-		usb_fill_bulk_urb(urb, data->usb_dev,
-			usb_sndbulkpipe(data->usb_dev, data->bulk_out),
-			dmabuf, sizeof(msg.header),
-			usbtmc_query_bulk_cb, data);
-
-		usb_anchor_urb( urb, &submitted );
-		retval = usb_submit_urb(urb, GFP_KERNEL);
-		usb_free_urb(urb);
-		if (unlikely(retval)) {
-			usb_unanchor_urb(urb);
-			goto error;
-		}
-	}
-	
+	while (bufcount > 0)
 	{
 		u8* dmabuf = NULL;
 		struct urb *urb = usbtmc_create_urb(data);
@@ -1123,6 +1108,8 @@ static ssize_t usbtmc_ioctl_generic_read(struct usbtmc_device_data *data,
 			usb_rcvbulkpipe(data->usb_dev, data->bulk_in),
 			dmabuf, bufsize,
 			usbtmc_read_bulk_cb, data);
+			
+		//urb->transfer_flags |= URB_SHORT_NOT_OK; //TODO: generates an error for short packets!
 		
 		usb_anchor_urb( urb, &submitted );
 		retval = usb_submit_urb(urb, GFP_KERNEL);
@@ -1132,9 +1119,10 @@ static ssize_t usbtmc_ioctl_generic_read(struct usbtmc_device_data *data,
 			usb_unanchor_urb(urb);
 			goto error;
 		}
+		bufcount--;
 	}
 
-	remaining = (u64)msg.header.transfer_size + header_size;
+	remaining = (u64)requested_transfer_size;
 
 	while (remaining > 0) {
 		size_t this_part;
@@ -1162,86 +1150,37 @@ static ssize_t usbtmc_ioctl_generic_read(struct usbtmc_device_data *data,
 			retval = -EFAULT; /* must not happen */
 			goto error;
 		}
-		
-		if (header_size == sizeof(msg.header)) {
-			/* Receiving header. We do this only one time. */
-			if (urb->actual_length < sizeof(msg.header)) {
-				/* protocol violation: incomplete header */
-				usb_free_urb(urb);
-				retval = -EFAULT; // TODO: IO-Error
-				goto error;
-			}
-
-			memcpy(&msg.header, urb->transfer_buffer, sizeof(msg.header));
-			msg.header.transfer_size =
-			cpu_to_le32(((struct usbtmc_header*)urb->transfer_buffer)->transfer_size);
-			
-			if (msg.header.transfer_size > requested_transfer_size) {
-				/* protocol violation: more data than requested */
-				usb_free_urb(urb);
-				retval = -EFAULT;
-				goto error;
-			}
-
-			if (msg.header.transfer_size < requested_transfer_size) {
-				/* less data than requested is ok! */
-				remaining -= requested_transfer_size - msg.header.transfer_size;
-			}
-			
-			/* Do we need a second buffer */
-			if ( (u64)msg.header.transfer_size + header_size > bufsize ) {
-				u8* dmabuf = NULL;
-				struct urb *urb2 = usbtmc_create_urb(data);
-				if (!urb2) {
-					retval = -ENOMEM;
-					goto error;
-				}
-
-				dmabuf = urb2->transfer_buffer;
-				
-				usb_fill_bulk_urb(urb2, data->usb_dev,
-					usb_rcvbulkpipe(data->usb_dev, data->bulk_in),
-					dmabuf, bufsize,
-					usbtmc_read_bulk_cb, data);
-				
-				usb_anchor_urb( urb2, &submitted );
-				retval = usb_submit_urb(urb2, GFP_KERNEL);
-				/* urb is anchored. We can release our reference. */
-				usb_free_urb(urb2);
-				if (unlikely(retval)) {
-					usb_unanchor_urb(urb2);
-					goto error;
-				}
-			}
-
-			if (copy_to_user(arg, &msg, sizeof(msg))) {
-				usb_free_urb(urb);
-				retval = -EFAULT;
-				goto error;
-			}
-		}
 
 		if (remaining > urb->actual_length)
-			this_part = urb->actual_length - header_size;
+			this_part = urb->actual_length;
 		else
-			this_part = remaining - header_size;
-		
-		/* print_hex_dump(KERN_DEBUG, "usbtmc ", DUMP_PREFIX_NONE, 16, 1, 
-			urb->transfer_buffer + header_size, this_part, true); */
-			
-		// TODO: urb->transfer_buffer + header_size good style?
-		if (copy_to_user(msg.message + done, urb->transfer_buffer + header_size, this_part)) {
+			this_part = remaining;
+#if 0
+		print_hex_dump(KERN_DEBUG, "usbtmc ", DUMP_PREFIX_NONE, 16, 1, 
+			urb->transfer_buffer, this_part, true);
+#endif			
+		if (copy_to_user(msg.message + done, urb->transfer_buffer, this_part)) {
 			usb_free_urb(urb);
 			retval = -EFAULT;
 			goto error;
 		}
 
-		remaining -= this_part + header_size; // TODO: optimize arithmetic here ...
+		remaining -= this_part;
 		done += this_part;
-		header_size = 0;
+		
+		if ( urb->status ) {
+			usb_free_urb(urb);
+			retval = urb->status;
+			goto error;
+		}
+			
+		if ( this_part < bufsize ) {
+			usb_free_urb(urb);
+			break;
+		}
 
-		if (remaining > BULKSIZE) {
-			/* resubmit, since other  buffer still not enough */
+		if (remaining > bufsize) {
+			/* resubmit, since other buffer still not enough */
 			usb_anchor_urb( urb, &submitted );
 			retval = usb_submit_urb(urb, GFP_KERNEL);
 			usb_free_urb(urb);
@@ -1261,7 +1200,10 @@ error:
 	if (put_user(done, &((struct usbtmc_message*)arg)->transferred))
 		retval = -EFAULT;
 
-	usb_kill_anchored_urbs(&submitted);
+	dev_dbg(dev, "%s: before kill\n", __func__);
+	/* Attention: killing urbs can take long time */
+	usb_kill_anchored_urbs(&submitted); 
+	dev_dbg(dev, "%s: after kill\n", __func__);
 	
 	do {
 		struct urb *urb = usb_get_from_anchor(&data->anchor_ready);
@@ -1311,7 +1253,6 @@ static ssize_t usbtmc_ioctl_generic_write(struct usbtmc_device_data *data, void 
 	long   expire;
 	size_t bufsize = BULKSIZE;
 	struct usbtmc_message msg;
-	size_t header_size = sizeof(msg.header);
 	struct urb *urb = NULL;
 	struct usb_anchor submitted;
 	int retval = 0;
@@ -1338,41 +1279,35 @@ static ssize_t usbtmc_ioctl_generic_write(struct usbtmc_device_data *data, void 
 		return -EFAULT;
 
 	dev_dbg(dev, "%s: size(%u) sema=%u\n", 
-		__func__,(unsigned)msg.header.transfer_size,
+		__func__,(unsigned)msg.transfer_size,
 		data->limit_write_sem.count);
 
-	remaining = msg.header.transfer_size + header_size;
+	remaining = msg.transfer_size;
 	urb = usbtmc_create_urb(data);
 	if (!urb)
 		return -ENOMEM;
 	
 	buffer = urb->transfer_buffer;
-	memcpy(buffer, &msg.header, sizeof(msg.header));
 
-	((struct usbtmc_header*)buffer)->transfer_size =
-		cpu_to_le32(msg.header.transfer_size);
-	buffer += sizeof(msg.header);
-	
 	while (remaining > 0) {
 		size_t this_part;
 		size_t n_bytes;
 
 		if (remaining > bufsize)
-			this_part = bufsize - header_size;
+			this_part = bufsize;
 		else
-			this_part = remaining - header_size;
+			this_part = remaining;
 
 		if (copy_from_user(buffer, (u8*)msg.message + done, this_part)) {
 			retval = -EFAULT;
 			goto error;
 		}
-
-		/* print_hex_dump(KERN_DEBUG, "usbtmc ", DUMP_PREFIX_NONE, 
-			16, 1, buffer, this_part, true); */
-
-		n_bytes = (header_size + this_part + 3) & ~3; /*roundup(..,4)*/
-		dev_dbg(dev, "write(n:%u,h:%u,p:%u d:%u)\n", 
-			(unsigned)n_bytes,(unsigned)header_size,
+#if 0
+		print_hex_dump(KERN_DEBUG, "usbtmc ", DUMP_PREFIX_NONE, 
+			16, 1, buffer, this_part, true);
+#endif
+		n_bytes = this_part; //(this_part + 3) & ~3; /*roundup(..,4)*/
+		dev_dbg(dev, "write(size:%u done:%u)\n", 
 			(unsigned)this_part,(unsigned)done);
 
 		usb_fill_bulk_urb(urb, data->usb_dev,
@@ -1410,9 +1345,8 @@ static ssize_t usbtmc_ioctl_generic_write(struct usbtmc_device_data *data, void 
 		urb = NULL; /* urb will be finally released by usb driver */
 		buffer = NULL;
 
-		remaining -= this_part + header_size;
+		remaining -= this_part;
 		done += this_part;
-		header_size = 0; /* no more header data to send */
 
 		if (remaining == 0)
 			break;
@@ -1456,14 +1390,6 @@ error:
 		retval = data->status;
 	spin_unlock_irq(&data->err_lock);
 
-	if (done >= sizeof(msg.header))
-		done -= sizeof(msg.header);
-	else
-		done = 0;
-	
-	if (done > msg.header.transfer_size)
-		done = msg.header.transfer_size;
-	
 	put_user(done, &((struct usbtmc_message*)arg)->transferred);
 	
 	return retval;
@@ -1990,6 +1916,7 @@ static long usbtmc_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		break;
 
 	case USBTMC_IOCTL_QUERY:
+	case USBTMC_IOCTL_READ:
 		retval = usbtmc_ioctl_generic_read(data, (void __user *)arg, cmd);
 		break;
 		
