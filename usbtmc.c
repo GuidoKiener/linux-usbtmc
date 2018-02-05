@@ -196,7 +196,7 @@ static int usbtmc_open(struct inode *inode, struct file *filp)
 	/* Store pointer in file structure's private data field */
 	filp->private_data = data;
 	
-	/* TODO: initialize stable data */
+	/* TODO: initialize stale data */
 	atomic_set(&data->iin_data_valid, 0);
 	atomic_set(&data->srq_asserted, 0);
 	//data->bNotify1 = data->bNotify2 = 0;
