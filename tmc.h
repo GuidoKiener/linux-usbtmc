@@ -69,6 +69,7 @@ struct usbtmc_header
  * usbtmc_message->flags:
  */
 #define USBTMC_FLAG_ASYNC	0x0001
+#define USBTMC_FLAG_APPEND	0x0002
 
 struct usbtmc_message
 {
@@ -102,6 +103,10 @@ struct usbtmc_message
 #define USBTMC488_IOCTL_GOTO_LOCAL	_IO(USBTMC_IOC_NR, 20)
 #define USBTMC488_IOCTL_LOCAL_LOCKOUT	_IO(USBTMC_IOC_NR, 21)
 #define USBTMC488_IOCTL_TRIGGER 	_IO(USBTMC_IOC_NR, 22)
+
+/* For test purpose only */
+#define USBTMC_IOCTL_SET_OUT_HALT	_IO(USBTMC_IOC_NR, 30)
+#define USBTMC_IOCTL_SET_IN_HALT	_IO(USBTMC_IOC_NR, 31)
 
 /* Driver encoded usb488 capabilities */
 #define USBTMC488_CAPABILITY_TRIGGER         1
