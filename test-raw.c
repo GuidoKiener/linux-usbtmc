@@ -249,6 +249,7 @@ void setSRE(int val) {
 	tmc_send(buf);
 }
 
+#if 0 // see below
 int tmc_read(char *msg, __u32 max_len, __u32 *received) 
 {
 	struct usbtmc_message data;
@@ -284,7 +285,7 @@ int tmc_read(char *msg, __u32 max_len, __u32 *received)
 
 	data.message = request;
 	data.transfer_size = HEADER_SIZE;
-	data.flags = 1; /* async */
+	data.flags = USBTMC_FLAG_ASYNC;
 
 	retval = ioctl(fd,USBTMC_IOCTL_WRITE, &data);
 	if (retval < 0) {
@@ -341,8 +342,9 @@ exit:
 	free(buf);
 	return retval;
 }
+#endif
 
-int tmc_read_async_start(__u32 max_len)
+static int tmc_read_async_start(__u32 max_len)
 {
 	struct usbtmc_message data;
 	char request[HEADER_SIZE];
@@ -370,7 +372,7 @@ int tmc_read_async_start(__u32 max_len)
 	data.flags = USBTMC_FLAG_ASYNC; /* async */
 
 	retval = ioctl(fd,USBTMC_IOCTL_WRITE, &data);
-	printf("tmc_read_async_start 1: rv=%d\n", retval);
+	//printf("tmc_read_async_start 1: rv=%d\n", retval);
 	if (retval < 0)
 		return retval;
 
@@ -378,7 +380,7 @@ int tmc_read_async_start(__u32 max_len)
 	data.transfer_size = BULKSIZE;
 	data.flags = USBTMC_FLAG_ASYNC; /* sync */
 	retval = ioctl(fd,USBTMC_IOCTL_READ, &data);
-	printf("tmc_read_async_start 2: rv=%d\n", retval);
+	//printf("tmc_read_async_start 2: rv=%d\n", retval);
 	if (retval < 0) {
 		if (errno == EAGAIN) // expected value
 			retval = 0;
@@ -464,6 +466,56 @@ exit:
 	return retval;
 }
 
+int tmc_read(char *msg, __u32 max_len, __u32 *received)
+{
+	struct pollfd pfd;
+	int timeout = 2000;
+	int err;
+	__u32 transferred = 0;
+	
+	int rv = tmc_read_async_start(max_len);
+	if (rv < 0)
+		goto exit;
+
+	pfd.fd = fd;
+	pfd.events = POLLOUT|POLLIN|POLLERR|POLLHUP;
+	err = poll(&pfd,1,timeout);
+	if (err!=1) {
+		ioctl(fd,USBTMC_IOCTL_CANCEL_IO);		
+		rv = -ETIMEDOUT;
+		goto exit;
+	}
+
+	/* Note that POLLOUT is set when all anchor "submitted" is empty */
+	if (pfd.revents & (POLLERR|POLLOUT)) {
+		__u32 written;
+		rv = tmc_write_result_async(&written);
+		if (rv < 0 || written != HEADER_SIZE) {
+			printf("tmc_read failed to write header: rv=%d written=%u\n", rv, written);
+			ioctl(fd,USBTMC_IOCTL_CANCEL_IO);		
+			goto exit;
+		}
+	}
+	if (pfd.revents & (POLLERR|POLLIN)) {
+		rv = tmc_read_async_result( msg, max_len, &transferred);
+		if (rv < 0) {
+			printf("tmc_read failed: rv=%d received=%u\n", rv, transferred);
+		}
+	}
+	else {
+		/* must not happen */
+		assert(0);
+		rv = -1; // TODO:
+	}
+exit:
+	if (received)
+		*received = transferred;
+	
+	return rv;
+	
+	
+}
+
 /* Read string from scope */
 int rscope(char *buf, int max_len) {
 	int len = read(fd,buf,max_len);
@@ -506,6 +558,20 @@ void wait_for_user() {
 
 const size_t MAX_BL = 1024;
 
+static void any_system_error()
+{
+  char buf[MAX_BL];
+  int rv;
+  __u32 received = 0;
+  
+  tmc_send("system:error?\n");
+  rv = tmc_read(buf,MAX_BL, &received);
+  if (rv < 0 || received == 0) {
+	printf("read failed: rv=%d errno=%d recv=%u\n", rv, errno, received);
+	exit(1);
+  }	  
+  printf("syst:err? = %.*s", received, buf);
+}
 
 int main () {
   int rv;
@@ -564,10 +630,7 @@ int main () {
   time = getTS_usec();
   printf("*OPC? Latency = %.0f us per call\n", time/10.0);
 
-  /* Any system error? */
-  tmc_send("system:error?\n");
-  tmc_read(buf,MAX_BL, &received);
-  printf("syst:err? = %.*s", received, buf);
+  any_system_error();
   
   show_stb(get_stb());
   setSRE(0x10); /* Do SRQ when MAV set (message available) */
@@ -580,11 +643,7 @@ int main () {
 
   setSRE(0x00);
   
-  //return 0;
-  /* Any system error? */
-  tmc_send("system:error?\n");
-  tmc_read(buf,MAX_BL, &received);
-  printf("syst:err? = %.*s", received, buf);
+  any_system_error();
 
   tmc_write(sBigSend,n+9000, &sent);
   tmc_send("mmem:data? 'test.txt'");
@@ -594,10 +653,7 @@ int main () {
 	exit(1);
   }
 
-  /* Any system error? */
-  tmc_send("system:error?\n");
-  tmc_read(buf,MAX_BL, &received);
-  printf("syst:err? = %.*s", received, buf);
+  any_system_error();
 
   /* test asynchronous write */
   getTS_usec(); /* initialize time stamp */
@@ -647,14 +703,14 @@ int main () {
 
   ioctl(fd,USBTMC_IOCTL_SET_OUT_HALT); // lock bulk out
   rv = tmc_write(sBigSend,n+9000, &sent);
-  printf("big send should fail: rv=%d errno=%d sent=%u\n", rv, errno, sent);
+  printf("big write should fail: rv=%d errno=%d sent=%u\n", rv, errno, sent);
   if (rv >= 0) {
   	perror("sending should fail: ");
 	exit(1);
   }
 
   rv = tmc_write_async("123",3, &sent);
-  printf("async send should fail: rv=%d errno=%d sent=%u\n", rv, errno, sent);
+  printf("async write should fail: rv=%d errno=%d sent=%u\n", rv, errno, sent);
   wait_for_write(500);
 
   rv = tmc_write_result_async(&sent);
@@ -663,8 +719,15 @@ int main () {
   	perror("async send result should fail: ");
 	exit(1);
   }
+
+  rv = tmc_read(buf,MAX_BL, &received);
+  printf("read should fail: rv=%d errno=%d recv=%u\n", rv, errno, received);
+  if (rv >= 0 || errno != EPIPE) {
+  	perror("synchron read should fail: ");
+	exit(1);
+  }
   
-#if 1
+#if 0
   rv = tmc_write_async(sBigSend,n+9000, &sent);
   printf("async send should fail: rv=%d errno=%d sent=%u\n", rv, errno, sent);
   // This error should be detected before everything is sent.
@@ -676,14 +739,12 @@ int main () {
 	exit(1);
   }
 #endif
+  ioctl(fd,USBTMC_IOCTL_CANCEL_IO);
 
-  fsync(fd); // clear all errors for safety. TODO: When is it called?
-  ioctl(fd,USBTMC_IOCTL_CLEAR_OUT_HALT); // lock bulk out
+  ioctl(fd,USBTMC_IOCTL_CLEAR_IN_HALT); // reset bulk in
+  ioctl(fd,USBTMC_IOCTL_CLEAR_OUT_HALT); // reset bulk out
 
-  /* Any system error? */
-  tmc_send("system:error?\n");
-  tmc_read(buf,MAX_BL, &received);
-  printf("syst:err? = %.*s", received, buf);
+  any_system_error();
 
   ioctl(fd,USBTMC_IOCTL_SET_IN_HALT); // lock bulk in
   tmc_send("system:error?\n");
@@ -695,11 +756,15 @@ int main () {
   }
 
   ioctl(fd,USBTMC_IOCTL_CLEAR_IN_HALT); // clear feature halt bulk in
+
+  any_system_error();
   
   /* just try to read data. Note this is not conform with protocol */
   rv = tmc_read(buf,MAX_BL, &received);
   printf("read should fail with timeout: rv=%d errno=%d recv=%u\n", rv, errno, received);
-  printf("syst:err? = %.*s", received, buf);
+  
+  //ioctl(fd,USBTMC_IOCTL_CANCEL_IO); // lock bulk in
+  any_system_error();
   
   printf("done\n");
   close(fd);
