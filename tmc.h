@@ -39,21 +39,18 @@
 #define USBTMC488_REQUEST_GOTO_LOCAL			161
 #define USBTMC488_REQUEST_LOCAL_LOCKOUT			162
 
-struct usbtmc_ctrlrequest
-{
+struct usbtmc_ctrlrequest {
 	struct usb_ctrlrequest req;
-	void* data;
+	void *data;
 } __attribute__ ((packed));
 
-struct usbtmc_termchar
-{
+struct usbtmc_termchar {
 	__u8 term_char;
 	__u8 term_char_enabled; // bool
 } __attribute__ ((packed));
 
 #if 0
-struct usbtmc_header
-{
+struct usbtmc_header {
 	__u8  msgid;
 	__u8  tag;
 	__u8  inv_tag;
@@ -71,12 +68,11 @@ struct usbtmc_header
 #define USBTMC_FLAG_ASYNC	0x0001
 #define USBTMC_FLAG_APPEND	0x0002
 
-struct usbtmc_message
-{
-        void* message; /* pointer to header and data */
-        __u64 transfer_size; /* size of bytes to transfer */
-        __u64 transferred; /* size of received/written bytes */
-        __u32 flags; /* bit 0: 0 = synchronous; 1 = asynchronous */
+struct usbtmc_message {
+	void *message; /* pointer to header and data */
+	__u64 transfer_size; /* size of bytes to transfer */
+	__u64 transferred; /* size of received/written bytes */
+	__u32 flags; /* bit 0: 0 = synchronous; 1 = asynchronous */
 } __attribute__ ((packed));
 
 /* Request values for USBTMC driver's ioctl entry point */
@@ -88,8 +84,8 @@ struct usbtmc_message
 #define USBTMC_IOCTL_CLEAR_OUT_HALT	_IO(USBTMC_IOC_NR, 6)
 #define USBTMC_IOCTL_CLEAR_IN_HALT	_IO(USBTMC_IOC_NR, 7)
 #define USBTMC_IOCTL_CTRL_REQUEST	_IOWR(USBTMC_IOC_NR, 8, struct usbtmc_ctrlrequest)
-#define USBTMC_IOCTL_GET_TIMEOUT 	_IOR(USBTMC_IOC_NR, 9, unsigned int)
-#define USBTMC_IOCTL_SET_TIMEOUT 	_IOW(USBTMC_IOC_NR, 10, unsigned int)
+#define USBTMC_IOCTL_GET_TIMEOUT	_IOR(USBTMC_IOC_NR, 9, unsigned int)
+#define USBTMC_IOCTL_SET_TIMEOUT	_IOW(USBTMC_IOC_NR, 10, unsigned int)
 #define USBTMC_IOCTL_EOM_ENABLE	        _IOW(USBTMC_IOC_NR, 11, unsigned char)
 #define USBTMC_IOCTL_CONFIG_TERMCHAR	_IOW(USBTMC_IOC_NR, 12, struct usbtmc_termchar)
 
@@ -102,7 +98,7 @@ struct usbtmc_message
 #define USBTMC488_IOCTL_REN_CONTROL	_IOW(USBTMC_IOC_NR, 19, unsigned char)
 #define USBTMC488_IOCTL_GOTO_LOCAL	_IO(USBTMC_IOC_NR, 20)
 #define USBTMC488_IOCTL_LOCAL_LOCKOUT	_IO(USBTMC_IOC_NR, 21)
-#define USBTMC488_IOCTL_TRIGGER 	_IO(USBTMC_IOC_NR, 22)
+#define USBTMC488_IOCTL_TRIGGER		_IO(USBTMC_IOC_NR, 22)
 
 /* For test purpose only */
 #define USBTMC_IOCTL_SET_OUT_HALT	_IO(USBTMC_IOC_NR, 30)
