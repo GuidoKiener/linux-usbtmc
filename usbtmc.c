@@ -97,6 +97,7 @@ struct usbtmc_device_data {
 	const struct usb_device_id *id;
 	struct usb_device *usb_dev;
 	struct usb_interface *intf;
+	struct list_head file_list;
 
 	unsigned int bulk_in;
 	unsigned int bulk_out;
@@ -108,6 +109,7 @@ struct usbtmc_device_data {
 	/* data for interrupt in endpoint handling */
 	u8             bNotify1;
 	u8             bNotify2;
+	//u8             srq_byte;
 	u16            ifnum;
 	u8             iin_bTag;
 	u8            *iin_buffer;
@@ -117,7 +119,7 @@ struct usbtmc_device_data {
 	int            iin_interval;
 	struct urb    *iin_urb;
 	u16            iin_wMaxPacketSize;
-	atomic_t       srq_asserted;
+	//atomic_t       srq_asserted;
 
 	/* coalesced usb488_caps from usbtmc_dev_capabilities */
 	__u8 usb488_caps;
@@ -154,6 +156,17 @@ struct usbtmc_device_data {
 };
 #define to_usbtmc_data(d) container_of(d, struct usbtmc_device_data, kref)
 
+/* 
+ * This structure holds private data for each USBTMC file handle.
+ */
+struct usbtmc_file_data {
+	struct usbtmc_device_data *data;
+	struct list_head file_elem;
+	u8             srq_byte;
+	atomic_t       srq_asserted;
+	bool           closing;
+};
+
 struct usbtmc_ID_rigol_quirk {
 	__u16 idVendor;
 	__u16 idProduct;
@@ -181,6 +194,7 @@ static int usbtmc_open(struct inode *inode, struct file *filp)
 {
 	struct usb_interface *intf;
 	struct usbtmc_device_data *data;
+	struct usbtmc_file_data *file_data;
 	int retval = 0;
 
 	intf = usb_find_interface(&usbtmc_driver, iminor(inode));
@@ -189,16 +203,27 @@ static int usbtmc_open(struct inode *inode, struct file *filp)
 		return -ENODEV;
 	}
 
+	file_data = kzalloc(sizeof(*file_data), GFP_KERNEL);
+	if (!file_data)
+		return -ENOMEM;
+	
 	data = usb_get_intfdata(intf);
+
+	spin_lock_irq(&data->err_lock);
+	file_data->data = data;
+	INIT_LIST_HEAD(&file_data->file_elem);
+	list_add_tail(&file_data->file_elem, &data->file_list);
+	spin_unlock_irq(&data->err_lock);
+	
 	/* Protect reference to data from file structure until release */
 	kref_get(&data->kref);
 
 	/* Store pointer in file structure's private data field */
-	filp->private_data = data;
+	filp->private_data = file_data;
 
 	/* TODO: (re-)initialize stale data after open,close,open,... */
 	atomic_set(&data->iin_data_valid, 0);
-	atomic_set(&data->srq_asserted, 0);
+	atomic_set(&file_data->srq_asserted, 0);
 	/*data->bNotify1 = data->bNotify2 = 0;*/
 
 	return retval;
@@ -206,10 +231,15 @@ static int usbtmc_open(struct inode *inode, struct file *filp)
 
 static int usbtmc_release(struct inode *inode, struct file *file)
 {
-	struct usbtmc_device_data *data = file->private_data;
+	struct usbtmc_file_data *file_data = file->private_data;
 
-	dev_dbg(&data->intf->dev, "%s - called\n", __func__);
-	kref_put(&data->kref, usbtmc_delete);
+	dev_dbg(&file_data->data->intf->dev, "%s - called\n", __func__);
+	spin_lock_irq(&file_data->data->err_lock);
+	list_del(&file_data->file_elem); // TODO: protect!
+	spin_unlock_irq(&file_data->data->err_lock);
+	kref_put(&file_data->data->kref, usbtmc_delete);
+	file_data->data = NULL;
+	kfree(file_data);
 	return 0;
 }
 
@@ -434,9 +464,10 @@ exit:
 	return rv;
 }
 
-static int usbtmc488_ioctl_read_stb(struct usbtmc_device_data *data,
+static int usbtmc488_ioctl_read_stb(struct usbtmc_file_data *file_data,
 				void __user *arg)
 {
+	struct usbtmc_device_data *data = file_data->data;
 	struct device *dev = &data->intf->dev;
 	int srq_asserted = 0;
 	u8 *buffer;
@@ -447,16 +478,19 @@ static int usbtmc488_ioctl_read_stb(struct usbtmc_device_data *data,
 	dev_dbg(dev, "Enter ioctl_read_stb iin_ep_present: %d\n",
 		data->iin_ep_present);
 
-	srq_asserted = atomic_xchg(&data->srq_asserted, srq_asserted);
+	spin_lock_irq(&data->err_lock);
+	srq_asserted = atomic_xchg(&file_data->srq_asserted, srq_asserted);
 	if (srq_asserted) {
 		/* a STB with SRQ is already received */
-		stb = data->bNotify2;
+		stb = file_data->srq_byte;
+		spin_unlock_irq(&data->err_lock);
 		rv = copy_to_user(arg, &stb, sizeof(stb));
 		dev_dbg(dev, "stb:0x%02x with srq received %d\n", (unsigned)stb, rv);
 		if (rv)
 			return -EFAULT;
 		return 0; /* TODO: need to return 1? */
 	}
+	spin_unlock_irq(&data->err_lock);
 
 	buffer = kmalloc(8, GFP_KERNEL);
 	if (!buffer)
@@ -483,8 +517,8 @@ static int usbtmc488_ioctl_read_stb(struct usbtmc_device_data *data,
 	}
 
 	if (data->iin_ep_present) {
-		//rv = wait_event_interruptible_timeout( // TODO: gk: usb_control_msg does not interrupt either!
-		rv = wait_event_timeout(
+		rv = wait_event_interruptible_timeout( // TODO: gk: usb_control_msg does not interrupt either!
+		//rv = wait_event_timeout(
 			data->waitq,
 			atomic_read(&data->iin_data_valid) != 0,
 			data->timeout);
@@ -524,6 +558,52 @@ static int usbtmc488_ioctl_read_stb(struct usbtmc_device_data *data,
 
 	kfree(buffer);
 	return rv;
+}
+
+static int usbtmc488_ioctl_wait_srq(struct usbtmc_file_data *file_data,
+				    unsigned int __user *arg)
+{
+	struct usbtmc_device_data *data = file_data->data;
+	struct device *dev = &data->intf->dev;
+	int rv;
+	unsigned int timeout;
+
+	if (data->zombie)
+		return -ENODEV;
+
+	if (!data->iin_ep_present) {
+		dev_dbg(dev, "no interrupt endpoint present\n");
+		return -EFAULT;
+	}
+	
+	if (get_user(timeout,arg))
+		return -EFAULT;
+
+	mutex_unlock(&data->io_mutex);
+	
+	rv = wait_event_interruptible_timeout(
+			data->waitq,
+			atomic_read(&file_data->srq_asserted) != 0 || 
+			file_data->closing,
+			timeout);
+
+	mutex_lock(&data->io_mutex);
+
+	if (file_data->closing)
+		rv = -ENODEV;
+
+	if (rv < 0) {
+		dev_dbg(dev, "%s - wait interrupted %d\n", __func__, rv);
+		return rv;
+	}
+
+	if (rv == 0) {
+		dev_dbg(dev, "%s - wait timed out\n", __func__);
+		return -ETIME; // TODO return -ETIMEDOUT
+	}
+
+	dev_dbg(dev, "%s - srq asserted\n", __func__);
+	return 1;
 }
 
 static int usbtmc488_ioctl_simple(struct usbtmc_device_data *data,
@@ -685,6 +765,7 @@ static int send_request_dev_dep_msg_in(struct usbtmc_device_data *data, size_t t
 static ssize_t usbtmc_read(struct file *filp, char __user *buf,
 			   size_t count, loff_t *f_pos)
 {
+	struct usbtmc_file_data *file_data;
 	struct usbtmc_device_data *data;
 	struct device *dev;
 	u32 n_characters;
@@ -696,7 +777,8 @@ static ssize_t usbtmc_read(struct file *filp, char __user *buf,
 	size_t this_part;
 
 	/* Get pointer to private data structure */
-	data = filp->private_data;
+	file_data = filp->private_data;
+	data = file_data->data;
 	dev = &data->intf->dev;
 
 	buffer = kmalloc(io_buffer_size, GFP_KERNEL);
@@ -868,6 +950,7 @@ exit:
 static ssize_t usbtmc_write(struct file *filp, const char __user *buf,
 			    size_t count, loff_t *f_pos)
 {
+	struct usbtmc_file_data *file_data;
 	struct usbtmc_device_data *data;
 	u8 *buffer;
 	int retval;
@@ -877,7 +960,8 @@ static ssize_t usbtmc_write(struct file *filp, const char __user *buf,
 	int done;
 	int this_part;
 
-	data = filp->private_data;
+	file_data = filp->private_data;
+	data = file_data->data;
 
 	buffer = kmalloc(io_buffer_size, GFP_KERNEL);
 	if (!buffer)
@@ -985,13 +1069,17 @@ static struct urb *usbtmc_create_urb(struct usbtmc_device_data *data)
  */
 static int usbtmc_flush(struct file *file, fl_owner_t id)
 {
+	struct usbtmc_file_data *file_data;
 	struct usbtmc_device_data *data;
 
 	int res = 0;
 
-	data = file->private_data;
-	if (data == NULL) // TODO: also needed for _read/_write ...?
+	file_data = file->private_data;
+	if (file_data == NULL) // TODO: also needed for _read/_write ...?
 		return -ENODEV;
+		
+	file_data->closing = 1;
+	data = file_data->data;
 
 	/* wait for io to stop */
 	mutex_lock(&data->io_mutex);
@@ -1048,7 +1136,7 @@ static void usbtmc_read_bulk_cb(struct urb *urb)
 	//wake_up_interruptible(&data->wait_bulk_in); ???
 	wake_up(&data->wait_bulk_in);
 	//TODO: if (usb_anchor_empty(&data->submitted))
-	wake_up_interruptible(&data->waitq);
+	wake_up_interruptible(&data->waitq); // TODO: wake up all?
 }
 
 static inline bool usbtmc_do_transfer(struct usbtmc_device_data *data)
@@ -1218,7 +1306,7 @@ static ssize_t usbtmc_ioctl_generic_read(struct usbtmc_device_data *data,
 			this_part = urb->actual_length;
 		else
 			this_part = remaining;
-#if 1
+#if 0
 		print_hex_dump(KERN_DEBUG, "usbtmc ", DUMP_PREFIX_NONE, 16, 1,
 			urb->transfer_buffer, this_part, true);
 #endif
@@ -1408,7 +1496,7 @@ static ssize_t usbtmc_ioctl_generic_write(struct usbtmc_device_data *data,
 			up(&data->limit_write_sem);
 			goto error;
 		}
-#if 1
+#if 0
 		print_hex_dump(KERN_DEBUG, "usbtmc ", DUMP_PREFIX_NONE,
 			16, 1, buffer, this_part, true);
 #endif
@@ -2015,10 +2103,13 @@ static int usbtmc_ioctl_config_termc(struct usbtmc_device_data *data,
 
 static long usbtmc_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
+	struct usbtmc_file_data *file_data;
 	struct usbtmc_device_data *data;
 	int retval = -EBADRQC;
 
-	data = file->private_data;
+	file_data = file->private_data;
+	data = file_data->data;
+	
 	mutex_lock(&data->io_mutex);
 	if (data->zombie) {
 		retval = -ENODEV;
@@ -2091,7 +2182,8 @@ static long usbtmc_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		break;
 
 	case USBTMC488_IOCTL_READ_STB:
-		retval = usbtmc488_ioctl_read_stb(data, (void __user *)arg);
+		retval = usbtmc488_ioctl_read_stb(file_data, 
+						  (void __user *)arg);
 		break;
 
 	case USBTMC488_IOCTL_REN_CONTROL:
@@ -2111,6 +2203,11 @@ static long usbtmc_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 
 	case USBTMC488_IOCTL_TRIGGER:
 		retval = usbtmc488_ioctl_trigger(data);
+		break;
+
+	case USBTMC488_IOCTL_WAIT_SRQ:
+		retval = usbtmc488_ioctl_wait_srq(file_data, 
+						  (unsigned int __user *)arg);
 		break;
 
 	case USBTMC_IOCTL_SET_OUT_HALT:
@@ -2133,14 +2230,15 @@ skip_io_on_zombie:
 
 static int usbtmc_fasync(int fd, struct file *file, int on)
 {
-	struct usbtmc_device_data *data = file->private_data;
+	struct usbtmc_file_data *file_data = file->private_data;
 
-	return fasync_helper(fd, file, on, &data->fasync);
+	return fasync_helper(fd, file, on, &file_data->data->fasync);
 }
 
 static unsigned int usbtmc_poll(struct file *file, poll_table *wait)
 {
-	struct usbtmc_device_data *data = file->private_data;
+	struct usbtmc_file_data *file_data = file->private_data;
+	struct usbtmc_device_data *data = file_data->data;
 	unsigned int mask;
 
 	mutex_lock(&data->io_mutex);
@@ -2156,7 +2254,7 @@ static unsigned int usbtmc_poll(struct file *file, poll_table *wait)
 	 * POLLIN|POLLRDNORM to normal read data.
 	 */
 	mask = 0;
-	if (atomic_read(&data->srq_asserted))
+	if (atomic_read(&file_data->srq_asserted))
 		mask |= POLLPRI;
 
 	/* Note that the anchor submitted includes all urbs for BULK IN
@@ -2221,17 +2319,26 @@ static void usbtmc_interrupt(struct urb *urb)
 		}
 		/* check for SRQ notification */
 		if (data->iin_buffer[0] == 0x81) {
+			struct list_head *elem;
+			
 			if (data->fasync)
 				kill_fasync(&data->fasync,
-					SIGIO, POLL_IN);
+					SIGIO, POLL_IN); // TODO: POLL_PRI?
 
-			data->bNotify1 = data->iin_buffer[0];
-			data->bNotify2 = data->iin_buffer[1];
-			atomic_set(&data->iin_data_valid, 1);
-			atomic_set(&data->srq_asserted, 1);
+			spin_lock(&data->err_lock);
+			list_for_each(elem, &data->file_list) {
+				struct usbtmc_file_data *file_data;
+				file_data = list_entry(elem, 
+						       struct usbtmc_file_data,
+						       file_elem);
+				file_data->srq_byte = data->iin_buffer[1];
+				atomic_set(&file_data->srq_asserted, 1);
+			}
+			spin_unlock(&data->err_lock);
+			
 			dev_dbg(dev, "srq received bTag %x stb %x\n",
-				(unsigned int)data->bNotify1,
-				(unsigned int)data->bNotify2);
+				(unsigned int)data->iin_buffer[0],
+				(unsigned int)data->iin_buffer[1]);
 			wake_up_interruptible(&data->waitq);
 			goto exit;
 		}
@@ -2303,10 +2410,10 @@ static int usbtmc_probe(struct usb_interface *intf,
 	sema_init(&data->limit_write_sem, MAX_URBS_IN_FLIGHT);
 	init_waitqueue_head(&data->waitq);
 	atomic_set(&data->iin_data_valid, 0);
-	atomic_set(&data->srq_asserted, 0);
 	init_usb_anchor(&data->submitted);
 	init_usb_anchor(&data->in_anchor);
 	init_waitqueue_head(&data->wait_bulk_in);
+	INIT_LIST_HEAD(&data->file_list);
 
 	data->zombie = 0;
 

@@ -532,7 +532,8 @@ void wait_for_srq() {
 }
 
 /* return true if we can write */
-int wait_for_write(int timeout) {
+int wait_for_write(int timeout)
+{
 	struct pollfd pfd;
 	int err;
 	pfd.fd = fd;
@@ -542,7 +543,8 @@ int wait_for_write(int timeout) {
 }
 
 /* return true if we can read */
-int wait_for_read(int timeout) {
+int wait_for_read(int timeout)
+{
 	struct pollfd pfd;
 	int err;
 	pfd.fd = fd;
@@ -551,7 +553,8 @@ int wait_for_read(int timeout) {
 	return ((err == 1) && (pfd.events & POLLIN));
 }
 
-void wait_for_user() {
+void wait_for_user()
+{
 	char buf[8];
 	read(0,buf,1);
 }

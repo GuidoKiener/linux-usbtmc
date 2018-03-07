@@ -49,6 +49,11 @@ struct usbtmc_termchar {
 	__u8 term_char_enabled; // bool
 } __attribute__ ((packed));
 
+struct usbtmc_interrupt {
+	__u8 notify1;
+	__u8 notify2;
+} __attribute__ ((packed));
+
 #if 0
 struct usbtmc_header {
 	__u8  msgid;
@@ -99,6 +104,7 @@ struct usbtmc_message {
 #define USBTMC488_IOCTL_GOTO_LOCAL	_IO(USBTMC_IOC_NR, 20)
 #define USBTMC488_IOCTL_LOCAL_LOCKOUT	_IO(USBTMC_IOC_NR, 21)
 #define USBTMC488_IOCTL_TRIGGER		_IO(USBTMC_IOC_NR, 22)
+#define USBTMC488_IOCTL_WAIT_SRQ	_IOW(USBTMC_IOC_NR, 23, unsigned int)
 
 /* For test purpose only */
 #define USBTMC_IOCTL_SET_OUT_HALT	_IO(USBTMC_IOC_NR, 30)
