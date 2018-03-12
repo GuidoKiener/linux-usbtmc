@@ -45,7 +45,7 @@
  */
 #define USBTMC_SIZE_IOBUFFER	2048
 
-/* Minimum USB timeout (in millisecongds) */
+/* Minimum USB timeout (in milliseconds) */
 #define USBTMC_MIN_TIMEOUT	500
 /* Default USB timeout (in milliseconds) */
 #define USBTMC_TIMEOUT		5000
@@ -218,11 +218,6 @@ static int usbtmc_open(struct inode *inode, struct file *filp)
 
 	/* Store pointer in file structure's private data field */
 	filp->private_data = file_data;
-
-	/* TODO: (re-)initialize stale data after open,close,open,... */
-	atomic_set(&data->iin_data_valid, 0);
-	atomic_set(&file_data->srq_asserted, 0);
-	/*data->bNotify1 = data->bNotify2 = 0;*/
 
 	return retval;
 }
@@ -483,10 +478,11 @@ static int usbtmc488_ioctl_read_stb(struct usbtmc_file_data *file_data,
 		stb = file_data->srq_byte;
 		spin_unlock_irq(&data->err_lock);
 		rv = copy_to_user(arg, &stb, sizeof(stb));
-		dev_dbg(dev, "stb:0x%02x with srq received %d\n", (unsigned int)stb, rv);
+		dev_dbg(dev, "stb:0x%02x with srq received %d\n",
+			(unsigned int)stb, rv);
 		if (rv)
 			return -EFAULT;
-		return 0; /* TODO: need to return 1? */
+		return rv;
 	}
 	spin_unlock_irq(&data->err_lock);
 
@@ -1252,8 +1248,7 @@ static ssize_t usbtmc_ioctl_generic_read(struct usbtmc_device_data *data,
 		return -EINVAL;
 
 	remaining = (u64)requested_transfer_size;
-	expire = data->timeout ? msecs_to_jiffies(data->timeout)
-				: MAX_SCHEDULE_TIMEOUT;
+	expire = msecs_to_jiffies(data->timeout);
 
 	while (remaining > 0) {
 		size_t this_part;
@@ -1263,7 +1258,6 @@ static ssize_t usbtmc_ioctl_generic_read(struct usbtmc_device_data *data,
 			dev_dbg(dev, "%s: before wait time %lu\n",
 				__func__, expire);
 			retval = wait_event_interruptible_timeout(
-			//retval = wait_event_timeout(
 				data->wait_bulk_in,
 				usbtmc_do_transfer(data),
 				expire);
@@ -1347,7 +1341,7 @@ error:
 		retval = -EFAULT;
 
 	dev_dbg(dev, "%s: before kill\n", __func__);
-	/* Attention: killing urbs can take long time */
+	/* Attention: killing urbs can take long time (2 ms) */
 	usb_kill_anchored_urbs(&data->submitted);
 	dev_dbg(dev, "%s: after kill\n", __func__);
 	usb_scuttle_anchored_urbs(&data->in_anchor);
@@ -1394,7 +1388,7 @@ static ssize_t usbtmc_ioctl_generic_write(struct usbtmc_device_data *data,
 	struct device *dev;
 	u64 done = 0;
 	u64 remaining;
-	long   expire;
+	unsigned long expire;
 	const size_t bufsize = BULKSIZE;
 	struct usbtmc_message msg;
 	struct urb *urb = NULL;
@@ -1436,7 +1430,7 @@ static ssize_t usbtmc_ioctl_generic_write(struct usbtmc_device_data *data,
 	remaining = msg.transfer_size;
 
 	timeout = data->timeout;
-	expire = timeout ? msecs_to_jiffies(timeout) : MAX_SCHEDULE_TIMEOUT;
+	expire = msecs_to_jiffies(timeout);
 
 	while (remaining > 0) {
 		size_t this_part, aligned;
@@ -1524,7 +1518,6 @@ static ssize_t usbtmc_ioctl_generic_write(struct usbtmc_device_data *data,
 	}
 
 	/* All urbs are on the fly */
-	// TODO: data->timeout ? data->timeout : MAX_SCHEDULE_TIMEOUT
 	if (!(msg.flags & USBTMC_FLAG_ASYNC)) {
 		if (!usb_wait_anchor_empty_timeout(&data->submitted, timeout)) {
 			retval = -ETIMEDOUT;
@@ -2036,6 +2029,9 @@ static int usbtmc_ioctl_set_timeout(struct usbtmc_device_data *data,
 	if (copy_from_user(&timeout, arg, sizeof(timeout)))
 		return -EFAULT;
 
+	/* Note that timeout = 0 means
+	 * MAX_SCHEDULE_TIMEOUT in usb_control_msg
+	 */
 	if (timeout < USBTMC_MIN_TIMEOUT)
 		return -EINVAL;
 
@@ -2357,7 +2353,6 @@ static void usbtmc_free_int(struct usbtmc_device_data *data)
 	usb_kill_urb(data->iin_urb);
 	kfree(data->iin_buffer);
 	usb_free_urb(data->iin_urb);
-	// TODO: free up free list
 	kref_put(&data->kref, usbtmc_delete);
 }
 
