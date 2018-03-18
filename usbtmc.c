@@ -35,7 +35,6 @@
 
 #define USBTMC_VERSION "1.2"
 
-#define RIGOL			1
 #define USBTMC_HEADER_SIZE	12
 #define USBTMC_MINOR_BASE	176
 
@@ -122,7 +121,6 @@ struct usbtmc_device_data {
 	/* coalesced usb488_caps from usbtmc_dev_capabilities */
 	__u8 usb488_caps;
 
-	u8 rigol_quirk;
 	/* attributes from the USB TMC spec for this device */
 	/* They are used as default values for file_data */
 	u8 TermChar;
@@ -172,17 +170,6 @@ struct usbtmc_file_data {
 	int in_status;
 	struct usb_anchor in_anchor;
 	wait_queue_head_t wait_bulk_in;
-};
-
-struct usbtmc_ID_rigol_quirk {
-	__u16 idVendor;
-	__u16 idProduct;
-};
-
-static const struct usbtmc_ID_rigol_quirk usbtmc_id_quirk[] = {
-	{ 0x1ab1, 0x0588 },
-	{ 0x1ab1, 0x04b0 },
-	{ 0, 0 }
 };
 
 /* Forward declarations */
@@ -815,16 +802,14 @@ static ssize_t usbtmc_read(struct file *filp, char __user *buf,
 		goto exit;
 	}
 
-	if (data->rigol_quirk) {
-		dev_dbg(dev, "usb_bulk_msg_in: count(%zu)\n", count);
+	dev_dbg(dev, "usb_bulk_msg_in: count(%zu)\n", count);
 
-		retval = send_request_dev_dep_msg_in(file_data, count);
+	retval = send_request_dev_dep_msg_in(file_data, count);
 
-		if (retval < 0) {
-			if (data->auto_abort)
-				usbtmc_ioctl_abort_bulk_out(data);
-			goto exit;
-		}
+	if (retval < 0) {
+		if (data->auto_abort)
+			usbtmc_ioctl_abort_bulk_out(data);
+		goto exit;
 	}
 
 	/* Loop until we have fetched everything we requested */
@@ -833,24 +818,6 @@ static ssize_t usbtmc_read(struct file *filp, char __user *buf,
 	done = 0;
 
 	while (remaining > 0) {
-		if (!data->rigol_quirk) {
-			dev_dbg(dev, "usb_bulk_msg_in: remaining(%zu), count(%zu)\n", remaining, count);
-
-			if (remaining > io_buffer_size - USBTMC_HEADER_SIZE - 3)
-				this_part = io_buffer_size - USBTMC_HEADER_SIZE - 3;
-			else
-				this_part = remaining;
-
-			retval = send_request_dev_dep_msg_in(file_data, this_part);
-			if (retval < 0) {
-				dev_err(dev, "usb_bulk_msg returned %d\n",
-					retval);
-				if (data->auto_abort)
-					usbtmc_ioctl_abort_bulk_out(data);
-				goto exit;
-			}
-		}
-
 		/* Send bulk URB */
 		retval = usb_bulk_msg(data->usb_dev,
 				      usb_rcvbulkpipe(data->usb_dev,
@@ -871,7 +838,7 @@ static ssize_t usbtmc_read(struct file *filp, char __user *buf,
 		}
 
 		/* Parse header in first packet */
-		if ((done == 0) || !data->rigol_quirk) {
+		if (done == 0) {
 			/* Sanity checks for the header */
 			if (actual < USBTMC_HEADER_SIZE) {
 				dev_err(dev, "Device sent too small first packet: %u < %u\n", actual, USBTMC_HEADER_SIZE);
@@ -911,19 +878,11 @@ static ssize_t usbtmc_read(struct file *filp, char __user *buf,
 			actual -= USBTMC_HEADER_SIZE;
 
 			/* Check if the message is smaller than requested */
-			if (data->rigol_quirk) {
-				if (remaining > n_characters)
-					remaining = n_characters;
-				/* Remove padding if it exists */
-				if (actual > remaining)
-					actual = remaining;
-			} else {
-				if (this_part > n_characters)
-					this_part = n_characters;
-				/* Remove padding if it exists */
-				if (actual > this_part)
-					actual = this_part;
-			}
+			if (remaining > n_characters)
+				remaining = n_characters;
+			/* Remove padding if it exists */
+			if (actual > remaining)
+				actual = remaining;
 
 			dev_dbg(dev, "Bulk-IN header: N_characters(%u), bTransAttr(%u)\n", n_characters, buffer[8]);
 
@@ -2438,20 +2397,6 @@ static int usbtmc_probe(struct usb_interface *intf,
 	 * data->in_transfer_size = 0;
 	 * data->in_status = 0;
 	 */
-
-	/* Determine if it is a Rigol or not */
-	data->rigol_quirk = 0;
-	dev_dbg(&intf->dev, "Trying to find if device Vendor 0x%04X Product 0x%04X has the RIGOL quirk\n",
-		le16_to_cpu(data->usb_dev->descriptor.idVendor),
-		le16_to_cpu(data->usb_dev->descriptor.idProduct));
-	for (n = 0; usbtmc_id_quirk[n].idVendor > 0; n++) {
-		if ((usbtmc_id_quirk[n].idVendor == le16_to_cpu(data->usb_dev->descriptor.idVendor)) &&
-		    (usbtmc_id_quirk[n].idProduct == le16_to_cpu(data->usb_dev->descriptor.idProduct))) {
-			dev_dbg(&intf->dev, "Setting this device as having the RIGOL quirk\n");
-			data->rigol_quirk = 1;
-			break;
-		}
-	}
 
 	/* Initialize USBTMC bTag and other fields */
 	data->bTag	= 1;
