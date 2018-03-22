@@ -1703,6 +1703,8 @@ static int usbtmc_ioctl_set_out_halt(struct usbtmc_device_data *data)
 {
 	int rv;
 
+	dev_dbg(&data->intf->dev, "%s - called\n", __func__);
+	
 	rv = usbtmc_set_halt(data->usb_dev,
 			     usb_sndbulkpipe(data->usb_dev, data->bulk_out));
 
@@ -1714,6 +1716,8 @@ static int usbtmc_ioctl_set_out_halt(struct usbtmc_device_data *data)
 static int usbtmc_ioctl_set_in_halt(struct usbtmc_device_data *data)
 {
 	int rv;
+
+	dev_dbg(&data->intf->dev, "%s - called\n", __func__);
 
 	rv = usbtmc_set_halt(data->usb_dev,
 			     usb_rcvbulkpipe(data->usb_dev, data->bulk_in));
@@ -1727,6 +1731,8 @@ static int usbtmc_ioctl_clear_out_halt(struct usbtmc_device_data *data)
 {
 	int rv;
 
+	dev_dbg(&data->intf->dev, "%s - called\n", __func__);
+	
 	rv = usb_clear_halt(data->usb_dev,
 			    usb_sndbulkpipe(data->usb_dev, data->bulk_out));
 
@@ -1738,6 +1744,8 @@ static int usbtmc_ioctl_clear_out_halt(struct usbtmc_device_data *data)
 static int usbtmc_ioctl_clear_in_halt(struct usbtmc_device_data *data)
 {
 	int rv;
+
+	dev_dbg(&data->intf->dev, "%s - called\n", __func__);
 
 	rv = usb_clear_halt(data->usb_dev,
 			    usb_rcvbulkpipe(data->usb_dev, data->bulk_in));
@@ -1760,7 +1768,7 @@ static int usbtmc_ioctl_cancel_io(struct usbtmc_file_data *file_data)
 	return 0;
 }
 
-static int usbtmc_ioctl_clear_result(struct usbtmc_file_data *file_data)
+static int usbtmc_ioctl_cleanup_io(struct usbtmc_file_data *file_data)
 {
 	dev_dbg(&file_data->data->intf->dev, "%s - called: %d\n", __func__, 0);
 	usb_kill_anchored_urbs(&file_data->submitted);
@@ -2213,8 +2221,8 @@ static long usbtmc_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		retval = usbtmc_ioctl_cancel_io(file_data);
 		break;
 
-	case USBTMC_IOCTL_CLEAR_RESULT:
-		retval = usbtmc_ioctl_clear_result(file_data);
+	case USBTMC_IOCTL_CLEANUP_IO:
+		retval = usbtmc_ioctl_cleanup_io(file_data);
 		break;
 	}
 
@@ -2349,6 +2357,7 @@ static void usbtmc_interrupt(struct urb *urb)
 	case -ESHUTDOWN:
 	case -EILSEQ:
 	case -ETIME:
+	case -EPIPE:
 		/* urb terminated, clean up */
 		dev_dbg(dev, "urb terminated, status: %d\n", status);
 		return;
@@ -2548,7 +2557,7 @@ static void usbtmc_disconnect(struct usb_interface *intf)
 		usb_scuttle_anchored_urbs(&file_data->in_anchor);
 	}
 	mutex_unlock(&data->io_mutex);
-	usbtmc_free_int(data);
+	usbtmc_free_int(data); // TODO: call this within locked mutex?
 	kref_put(&data->kref, usbtmc_delete);
 }
 
@@ -2582,12 +2591,13 @@ static int usbtmc_suspend(struct usb_interface *intf, pm_message_t message)
 		usbtmc_draw_down(file_data);
 	}
 	mutex_unlock(&data->io_mutex);
-
+	// TODO: call 	usbtmc_free_int(data);
 	return 0;
 }
 
 static int usbtmc_resume(struct usb_interface *intf)
 {
+	// TODO: enable interrupt pipe again.
 	return 0;
 }
 

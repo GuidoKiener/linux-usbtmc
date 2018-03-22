@@ -481,14 +481,17 @@ static int tmc_raw_read(char *msg, __u32 max_len, __u32 *received)
 	__u32 transferred = 0;
 	
 	int rv = tmc_raw_read_async_start(max_len);
-	if (rv < 0)
+	if (rv < 0) {
+		printf("tmc_raw_read failed to start: errno=%d\n", errno);
+		ioctl(fd,USBTMC_IOCTL_CLEANUP_IO);
 		goto exit;
+	}
 
 	pfd.fd = fd;
 	pfd.events = POLLOUT|POLLIN|POLLERR|POLLHUP;
 	err = poll(&pfd,1,timeout);
 	if (err!=1) {
-		ioctl(fd,USBTMC_IOCTL_CANCEL_IO);		
+		ioctl(fd,USBTMC_IOCTL_CLEANUP_IO);
 		rv = -ETIMEDOUT;
 		goto exit;
 	}
@@ -499,7 +502,7 @@ static int tmc_raw_read(char *msg, __u32 max_len, __u32 *received)
 		rv = tmc_raw_write_result_async(&written);
 		if (rv < 0 || written != HEADER_SIZE) {
 			printf("tmc_raw_read failed to write header: rv=%d written=%u\n", rv, written);
-			ioctl(fd,USBTMC_IOCTL_CANCEL_IO);		
+			ioctl(fd,USBTMC_IOCTL_CLEANUP_IO);
 			goto exit;
 		}
 	}
@@ -651,10 +654,7 @@ int main () {
   puts("*******************************************************************");
   printf("Testing device: *IDN? = %.*s", received, buf);
   puts("*******************************************************************");
-
-  /***********************************************************
-   * 1. Performance test with read/write
-   ***********************************************************/
+  puts("1. Performance test with read/write");
   getTS_usec(); /* initialize time stamp */
   for (i = 0; i < 10; i++) {
 	write(fd, "*OPC?\n",6);
@@ -664,9 +664,8 @@ int main () {
   printf("*OPC? Latency = %.0f us per call with read/write functions\n", time/10.0);
   any_system_error();
   
-  /***********************************************************
-   * 2. Performance test with raw read/write
-   ***********************************************************/
+  puts("*******************************************************************");
+  puts("2. Performance test with raw read/write");
   getTS_usec(); /* initialize time stamp */
   for (i = 0; i < 10; i++) {
 	tmc_raw_write("*OPC?\n",6,NULL);
@@ -675,9 +674,8 @@ int main () {
   time = getTS_usec();
   printf("*OPC? Latency = %.0f us per call with raw read/write functions\n", time/10.0);
 
-  /***********************************************************
-   * 3. Test split write with USBTMC_IOCTL_EOM_ENABLE
-   ***********************************************************/
+  puts("*******************************************************************");
+  puts("3. Test split write with USBTMC_IOCTL_EOM_ENABLE");
   enable_eom(0);
   tmc_send("system:");
   enable_eom(1);
@@ -686,9 +684,8 @@ int main () {
   assert(rv >= 0 && received > 0);
   any_system_error();
     
-  /***********************************************************
-   * 4a. Test SRQ with poll mode
-   ***********************************************************/
+  puts("*******************************************************************");
+  puts("4a. Test SRQ with poll mode");
   show_stb(get_stb());
   setSRE(0x10); /* Do SRQ when MAV set (message available) */
   getTS_usec(); /* initialise time stamp */
@@ -705,9 +702,8 @@ int main () {
   setSRE(0x00);
   any_system_error();
   
-  /***********************************************************
-   * 4a. Test SRQ with 
-   ***********************************************************/
+  puts("*******************************************************************");
+  puts("4b. Test SRQ with USBTMC488_IOCTL_WAIT_SRQ");
   setSRE(0x10); /* Do SRQ when MAV set (message available) */
   getTS_usec(); /* initialise time stamp */
   tmc_raw_send("*TST?");
@@ -732,9 +728,8 @@ int main () {
   
   any_system_error();
 
-  /***********************************************************
-   * 5a. Send and receive big data and verify content with write/read
-   ***********************************************************/ 
+  puts("*******************************************************************");
+  puts("5a. Send and receive big data and verify content with write/read");
   /* prepare big send data */
   digits = sprintf( buf, "%u", bigsize );
   n = sprintf( sBigSend,":MMEM:DATA 'test.txt',#%u%s", digits, buf );
@@ -759,10 +754,8 @@ int main () {
 	bigsize * (1.0e6/(1024*1024)) / time, bigsize * (1.0e6/(1024*1024)) / time2);
   any_system_error();
   
-  /***********************************************************
-   * 5b. Send and receive big data and verify content with raw read/write
-   ***********************************************************/ 
-
+  puts("*******************************************************************");
+  puts("5b. Send and receive big data and verify content with raw read/write");
   /* prepare big send data */
   digits = sprintf( buf, "%u", bigsize );
   n = sprintf( sBigSend,":MMEM:DATA 'test.txt',#%u%s", digits, buf );
@@ -785,10 +778,10 @@ int main () {
 	bigsize * (1.0e6/(1024*1024)) / time, bigsize * (1.0e6/(1024*1024)) / time2);
   any_system_error();
   
+  puts("*******************************************************************");
+  puts("5c. Send and receive big data and verify content with async raw read/write");
   /***********************************************************
-   * 5c. Send and receive big data and verify content with
-   *     asynchronous raw read/write
-   *
+   * 5c. asynchronous raw read/write
    *     Note that async write does not send more then 16 * 4k
    ***********************************************************/ 
   /* test asynchronous write and reduce bigsize for simple testing */
@@ -844,9 +837,8 @@ int main () {
 	exit(1);
   }
 
-  /***********************************************************
-   * 6a.  Test canceling asynchronous write
-   ***********************************************************/ 
+  puts("*******************************************************************");
+  puts("6a.  Test canceling asynchronous write");
   rv = tmc_raw_write_async(sBigSend,n+bigsize, &sent);
   assert(rv == 0);
   rv = ioctl(fd, USBTMC_IOCTL_CANCEL_IO);
@@ -858,12 +850,11 @@ int main () {
   printf("Async write successful canceled: errno = %d\n", errno);
   assert(errno == ECANCELED);
 
-  rv = ioctl(fd, USBTMC_IOCTL_CLEAR_RESULT);
+  rv = ioctl(fd, USBTMC_IOCTL_CLEANUP_IO);
   assert(rv == 0);
 
-  /***********************************************************
-   * 6b.  Test canceling asynchronous read
-   ***********************************************************/ 
+  puts("*******************************************************************");
+  puts("6b.  Test canceling asynchronous read");
   rv = tmc_raw_read_async_start(bigsize + MAX_BL);
   assert(rv == 0);
   rv = ioctl(fd, USBTMC_IOCTL_CANCEL_IO);
@@ -875,46 +866,61 @@ int main () {
   printf("Async read successful canceled: errno = %d\n", errno);
   assert(errno == ECANCELED);
 
-  rv = ioctl(fd, USBTMC_IOCTL_CLEAR_RESULT);
+  rv = ioctl(fd, USBTMC_IOCTL_CLEANUP_IO);
   assert(rv == 0);
   
-  printf("done\n");
-  exit(0);
+  puts("*******************************************************************");
+  puts("7a.  Test error handling for OUT PIPE");
 
-  /***********************************************************
-   * 7.  Test error handling
-   ***********************************************************/ 
-
-   /* rework test from here !!!!!!*/
-   
-  /* test error handling */
+  /* test error handling for standard write */
+  ioctl(fd,USBTMC_IOCTL_SET_OUT_HALT); // lock bulk out
+  rv = tmc_send("system:error?\n");
+  printf("standard write must fail: rv=%d errno=%d\n", rv, errno);
+  assert(errno == EPIPE);
+  if (rv >= 0) {
+	exit(1);
+  }
+  
+  /* test error handling for raw write */
   ioctl(fd,USBTMC_IOCTL_SET_OUT_HALT); // lock bulk out
   rv = tmc_raw_send("system:error?\n");
   printf("send should fail: rv=%d errno=%d\n", rv, errno);
+  assert(errno == EPIPE);
   if (rv >= 0) {
-  	perror("sending should fail: ");
 	exit(1);
   }
 
   ioctl(fd,USBTMC_IOCTL_SET_OUT_HALT); // lock bulk out
   rv = tmc_raw_write(sBigSend,n+bigsize, &sent);
   printf("big write should fail: rv=%d errno=%d sent=%u\n", rv, errno, sent);
+  assert(errno == EPIPE);
   if (rv >= 0) {
-  	perror("sending should fail: ");
 	exit(1);
   }
 
+  /* test error handling for async raw write */
+  errno = 0;
   rv = tmc_raw_write_async("123",3, &sent);
   printf("async write should fail: rv=%d errno=%d sent=%u\n", rv, errno, sent);
-  wait_for_write(500);
+  assert(rv == 0 && sent == 3);
+
+  getTS_usec();
+  rv = wait_for_write(1000);
+  time = getTS_usec();
+  printf("wait for write must return immediately: rv=%d time=%f msec\n", rv, time/1000.0);
+  assert(rv == 1);
+  assert(time < 400 * 1000);
 
   rv = tmc_raw_write_result_async(&sent);
   printf("async result: rv=%d transferred=%u\n", rv, sent);
+  assert(sent == 0);
+  assert(rv < 0);
   if (rv >= 0 || sent > 0) {
   	perror("async send result should fail: ");
 	exit(1);
   }
 
+  /* test error handling for async read */
   rv = tmc_raw_read(buf,MAX_BL, &received);
   printf("read should fail: rv=%d errno=%d recv=%u\n", rv, errno, received);
   if (rv >= 0 || errno != EPIPE) {
@@ -934,18 +940,22 @@ int main () {
 	exit(1);
   }
 #endif
-  ioctl(fd,USBTMC_IOCTL_CANCEL_IO);
-  ioctl(fd,USBTMC_IOCTL_CLEAR_RESULT);
+  rv = ioctl(fd,USBTMC_IOCTL_CLEANUP_IO);
+  assert(rv == 0);
+
+  rv = ioctl(fd,USBTMC_IOCTL_CLEAR);
+  assert(rv == 0);
 
   ioctl(fd,USBTMC_IOCTL_CLEAR_IN_HALT); // reset bulk in
   ioctl(fd,USBTMC_IOCTL_CLEAR_OUT_HALT); // reset bulk out
 
   any_system_error();
 
-  /* error in test from here !!!!!!*/
+  puts("*******************************************************************");
+  puts("7b.  Test error handling for IN PIPE");
 
   ioctl(fd,USBTMC_IOCTL_SET_IN_HALT); // lock bulk in
-  tmc_raw_send("system:error?\n");
+  tmc_raw_send("*idn?");
   rv = tmc_raw_read(buf,MAX_BL, &received);
   printf("read should fail: rv=%d errno=%d recv=%u\n", rv, errno, received);
   if (rv >= 0 || received > 0) {
@@ -953,15 +963,19 @@ int main () {
 	exit(1);
   }
 
-  ioctl(fd,USBTMC_IOCTL_CLEAR_IN_HALT); // clear feature halt bulk in
+  rv = ioctl(fd,USBTMC_IOCTL_CLEAR);
+  assert(rv == 0);
+  rv = ioctl(fd,USBTMC_IOCTL_CLEAR_IN_HALT); // clear feature halt bulk in
+  assert(rv == 0);
 
   any_system_error();
   
-  /* just try to read data. Note this is not conform with protocol */
+  /* just try to read data. We should run into timeout */
   rv = tmc_raw_read(buf,MAX_BL, &received);
   printf("read should fail with timeout: rv=%d errno=%d recv=%u\n", rv, errno, received);
+  assert(rv == -ETIMEDOUT);
+  assert(received == 0);
   
-  //ioctl(fd,USBTMC_IOCTL_CANCEL_IO); // lock bulk in
   any_system_error();
   
   printf("done\n");
