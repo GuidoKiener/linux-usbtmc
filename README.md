@@ -1,6 +1,6 @@
 # linux-usbtmc driver
 
-This is an experimental linux driver for usb test measurement &
+This is an experimental linux driver for usb test & measurement
 control instruments that adds support for missing functions in
 USBTMC-USB488 spec and the ability to handle SRQ notifications with
 fasync or poll/select. Most of the functions have been incorporated in
@@ -10,12 +10,12 @@ the standard usbtmc driver in their kernel.
 
 The following functions have not yet been incorporated into
 a kernel.org release:
- - trigger ioctl
  - module params
  - user get/set ioctls for usb timeout
  - ioctl to send generic usb control messages
  - ioctl to control setting of EOM bit in writes
  - ioctl to configure TermChar and TermCharEnable
+ - ioctls to send generic or vendor specific IN/OUT messages
  
 The remaining features are available in the standard kernel.org releases >= 4.6.
 
@@ -35,6 +35,8 @@ driver source code (linux-usbtmc/ or linux-usbtmc-master/).
 To install the driver run `make install` as root.
 
 To load the driver execute `rmmod usbtmc; insmod usbtmc.ko` as root.
+Enable debug messages with `insmod usbtmc.ko dyndbg=+p` and use `dmesg`
+to see debug output.
 
 To compile your instrument control program ensure that it includes the
 tmc.h file from this repo. An example test program for an
@@ -60,7 +62,6 @@ Individual feature descriptions:
 
 ### ioctl to support the USBTMC-USB488 READ_STATUS_BYTE operation.
 
-
 When performing a read on an instrument that is executing
 a function that runs longer than the USB timeout the instrument may
 hang and require a device reset to recover. The READ_STATUS_BYTE
@@ -70,6 +71,10 @@ as would  be the case with an "*STB?" query.
 
 Note: The READ_STATUS_BYTE ioctl clears the SRQ condition but it has no effect
 on the status byte of the device.
+
+New for IVI: The returned stb (type __u8) designates a previous SRQ when
+bit 6 is set. Note that if more file handles are opened to the same instrument,
+all file handles will receive the same status byte with SRQ bit set.
 
 
 ### Support for receiving USBTMC-USB488 SRQ notifications with fasync
@@ -124,6 +129,36 @@ Example
   }
 ```
 
+New for IVI: With the new asynchronous functions the behavior of the 
+poll function was extended. 
+ - POLLPRI is set when the interrupt pipe receives a statusbyte with SRQ.
+ - POLLIN | POLLRDNORM signals that asynchronous URBs are available on IN pipe.
+ - POLLOUT | POLLWRNORM signals that no URBS are submitted to IN or OUT pipe. 
+   It is save to write.
+ - POLLERR is set when any submitted URB fails.
+ 
+ Note that POLLERR cannot be masked out. That means waiting only for POLLPRI 
+ does not work when asynchronous operations are used. In this case ioctl
+ USBTMC488_IOCTL_WAIT_SRQ is recommended.
+ 
+ 
+###  New for IVI: ioctl USBTMC488_IOCTL_WAIT_SRQ
+
+The new ioctl offers an alternative way to wait for a Service Request.
+In opposite to the poll() function (see above) the ioctl does not return
+when asynchronous operations fail.
+
+```C
+static int wait_for_srq(unsigned int timeout) {
+	return ioctl(fd, USBTMC488_IOCTL_WAIT_SRQ, &timeout);
+}
+```
+The ioctl returns 0 or -1 with errno set:
+ - 0 when an SRQ is received
+ - errno = ETIMEDOUT when timeout (in ms) is elapsed.
+ - errno = ENODEV when file handle is closed or device disconnected
+ - errno = EFAULT when device does not have an interrupt pipe.
+ 
 
 ### New ioctls to enable and disable local controls on an instrument
 
