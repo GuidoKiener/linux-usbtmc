@@ -269,6 +269,7 @@ The working group "VISA for Linux" (IVI Foundation, www.ivifoundation.org)
 wants to extend the Linux USBTMC driver (linux/drivers/usb/class/usbtmc.c) 
 with the following new ioctl functions:
 
+
 ### New for IVI: ioctl USBTMC_IOCTL_WRITE
 The ioctl function uses the following struct to send generic OUT bulk messages:
 ```C
@@ -289,15 +290,28 @@ A semaphore limits the number of flying urbs. The function waits for the end of
 transmission or returns on error e.g when a single chunk exceeds the timeout.
 The member *usbtmc_message.transferred* returns the number of transferred bytes.
 
-In asynchronous mode (flags=1) the generic write function is non blocking.
-The member usbtmc_message.transferred returns the number of submitted bytes.
+In asynchronous mode (flags=USBTMC_FLAG_ASYNC) the generic write function is non blocking.
+The ioctl clears the current error state and the *internal transfer counter*.
+The member *usbtmc_message.transferred* returns the number of submitted bytes,
+however less data can be sent to the device in case of error. 
+The *internal transfer counter* holds the number of total transferred bytes.
+
+With flag USBTMC_FLAG_APPEND additional urbs are submitted without clearing the current
+error state or *internal transfer counter*.
+
 The function returns -EAGAIN when the semaphore does not allow to submit any urb.
 
 POLLOUT | POLLWRNORM and/or POLLERR are signaled when all submitted urbs are completed.
 POLLERR is set when any urb fails. See poll() function above.
 
+
 ### New for IVI: ioctl USBTMC_IOCTL_WRITE_RESULT
+The ioctl function copies the current *internal transfer counter* to the 
+given __u64 pointer and returns the current error state.
+
+
 ### New for IVI: ioctl USBTMC_IOCTL_READ
+
 ### New for IVI: ioctl USBTMC_IOCTL_CANCEL_IO
 ### New for IVI: ioctl USBTMC_IOCTL_CLEANUP_IO
 ### New for IVI: ioctl USBTMC_IOCTL_SET_OUT_HALT
