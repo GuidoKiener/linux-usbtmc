@@ -35,6 +35,7 @@ driver source code (linux-usbtmc/ or linux-usbtmc-master/).
 To install the driver run `make install` as root.
 
 To load the driver execute `rmmod usbtmc; insmod usbtmc.ko` as root.
+
 Enable debug messages with `insmod usbtmc.ko dyndbg=+p` and use `dmesg`
 to see debug output.
 
@@ -42,6 +43,9 @@ To compile your instrument control program ensure that it includes the
 tmc.h file from this repo. An example test program for an
 Agilent/Keysight scope is also provided. See the file ttmc.c
 To build the provided program run `make ttmc`
+
+**New for IVI:** To test new ioctl functions proposed by IVI Foundation
+please create the program `make test-raw`
 
 To clean the directory of build files run `make clean`
 
