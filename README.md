@@ -72,7 +72,7 @@ as would  be the case with an "*STB?" query.
 Note: The READ_STATUS_BYTE ioctl clears the SRQ condition but it has no effect
 on the status byte of the device.
 
-New for IVI: The returned stb (type __u8) designates a previous SRQ when
+**New for IVI:** The returned stb (type __u8) designates a previous SRQ when
 bit 6 is set. Note that if more file handles are opened to the same instrument,
 all file handles will receive the same status byte with SRQ bit set.
 
@@ -129,7 +129,7 @@ Example
   }
 ```
 
-New for IVI: With the new asynchronous functions the behavior of the 
+**New for IVI:** With the new asynchronous functions the behavior of the 
 poll function was extended. 
  - POLLPRI is set when the interrupt pipe receives a statusbyte with SRQ.
  - POLLIN | POLLRDNORM signals that asynchronous URBs are available on IN pipe.
@@ -142,7 +142,7 @@ poll function was extended.
  USBTMC488_IOCTL_WAIT_SRQ is recommended.
  
  
-###  New for IVI: ioctl USBTMC488_IOCTL_WAIT_SRQ
+###  **New for IVI:** ioctl USBTMC488_IOCTL_WAIT_SRQ
 
 The new ioctl offers an alternative way to wait for a Service Request.
 In opposite to the poll() function (see above) the ioctl does not return
@@ -198,7 +198,10 @@ For example to set the buffer size to 256KB:
 ```
 insmod usbtmc.ko io_buffer_size=262144
 ```
-
+**Proposal of IVI:** 
+ - using data_attribute(Timeout) instead of module parameter usb_timout.
+ - Is there a need to change the io_buffer_size? 4kB is a good value, too.
+ 
 ### ioctl's to set/get the usb timeout value
 
 Separate ioctl's to set and get the usb timeout value for a device.
@@ -258,6 +261,48 @@ Example
 	ioctl(fd,USBTMC_IOCTL_CONFIG_TERMCHAR,&termc)
 
 ```
+
+
+## New ioctls for members of IVI Foundation
+
+The working group "VISA for Linux" (IVI Foundation, www.ivifoundation.org) 
+wants to extend the Linux USBTMC driver (linux/drivers/usb/class/usbtmc.c) 
+with the following new ioctl functions:
+
+### New for IVI: ioctl USBTMC_IOCTL_WRITE
+The ioctl function uses the following struct to send generic OUT bulk messages:
+```C
+#define USBTMC_FLAG_ASYNC	0x0001
+#define USBTMC_FLAG_APPEND	0x0002
+
+struct usbtmc_message {
+	void *message; /* pointer to header and data */
+	__u64 transfer_size; /* size of bytes to transfer */
+	__u64 transferred; /* size of received/written bytes */
+	__u32 flags; /* bit 0: 0 = synchronous; 1 = asynchronous */
+} __attribute__ ((packed));
+```
+In synchronous mode (flags=0) the generic write function sends the *message* with
+a size of *transfer_size*. The *message* is split into chunks of 4k(=page size) and
+submitted (by usb_submit_urb) to the Bulk Out.
+A semaphore limits the number of flying urbs. The function waits for the end of
+transmission or returns on error e.g when a single chunk exceeds the timeout.
+The member *usbtmc_message.transferred* returns the number of transferred bytes.
+
+In asynchronous mode (flags=1) the generic write function is non blocking.
+The member usbtmc_message.transferred returns the number of submitted bytes.
+The function returns -EAGAIN when the semaphore does not allow to submit any urb.
+
+POLLOUT | POLLWRNORM and/or POLLERR are signaled when all submitted urbs are completed.
+POLLERR is set when any urb fails. See poll() function above.
+
+### New for IVI: ioctl USBTMC_IOCTL_WRITE_RESULT
+### New for IVI: ioctl USBTMC_IOCTL_READ
+### New for IVI: ioctl USBTMC_IOCTL_CANCEL_IO
+### New for IVI: ioctl USBTMC_IOCTL_CLEANUP_IO
+### New for IVI: ioctl USBTMC_IOCTL_SET_OUT_HALT
+### New for IVI: ioctl USBTMC_IOCTL_SET_IN_HALT
+
 
 
 ## Issues and enhancement requests
