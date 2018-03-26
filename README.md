@@ -301,7 +301,7 @@ error state or *internal transfer counter*.
 
 The function returns -EAGAIN when the semaphore does not allow to submit any urb.
 
-POLLOUT | POLLWRNORM and/or POLLERR are signaled when all submitted urbs are completed.
+POLLOUT | POLLWRNORM are signaled when all submitted urbs are completed.
 POLLERR is set when any urb fails. See poll() function above.
 
 
@@ -311,12 +311,74 @@ given __u64 pointer and returns the current error state.
 
 
 ### New for IVI: ioctl USBTMC_IOCTL_READ
+The ioctl function uses the following struct to get generic IN bulk messages:
+```C
+#define USBTMC_FLAG_ASYNC	0x0001
+#define USBTMC_FLAG_APPEND	0x0002
+
+struct usbtmc_message {
+	void *message; /* pointer to header and data */
+	__u64 transfer_size; /* size of bytes to transfer */
+	__u64 transferred; /* size of received/written bytes */
+	__u32 flags; /* bit 0: 0 = synchronous; 1 = asynchronous */
+} __attribute__ ((packed));
+```
+In synchronous mode (flags=0) the generic read function copies max. 
+*transfer_size* bytes of received data from Bulk IN to the 
+*usbtmc_message.message* pointer.
+Depending on *transfer_size* the read function submits one (<=4kB) or 
+two urbs to Bulk IN. For best performance the read function copies bytes
+from one urb to the *message* buffer while the other urb can receive data
+from the T&M device concurrently. The function waits for the end of 
+transmission or returns on error or timeout.
+The member *usbtmc_message.transferred* returns the number of received bytes.
+
+For best performance the requested transfer size should be a multiple of 4 kB.
+Please note that the driver has to round down the transfer_size to a multiple
+of 4 kByte when you use more then 4kB, since the Linux driver only detects 
+short packages, but no ZLP (zero length packages).
+
+In asynchronous mode (flags=USBTMC_FLAG_ASYNC) the generic read function 
+is non blocking. When no received data is available, the read function 
+submits urbs as many as needed to receive *transfer_size* bytes.
+However the number of flying urbs is limited by a semaphore (TODO).
+In this case the message pointer may be NULL.
+
+The function returns -EAGAIN when no data is available or the semaphore does
+not allow to submit an urb.
+
+When received data is already available (triggered by a previous async call)
+the function returns available data. The member *usbtmc_message.transferred*
+returns the number of received bytes. Ih this case *usbtmc_message.message* 
+pointer must be valid.
+
+POLLIN | POLLRDNORM are signaled  when at least one urb has completed 
+with received data.
+POLLOUT | POLLWRNORM are signaled when all submitted urbs IN/OUT are completed.
+POLLERR is set when any urb fails. See poll() function above.
+
 
 ### New for IVI: ioctl USBTMC_IOCTL_CANCEL_IO
-### New for IVI: ioctl USBTMC_IOCTL_CLEANUP_IO
-### New for IVI: ioctl USBTMC_IOCTL_SET_OUT_HALT
-### New for IVI: ioctl USBTMC_IOCTL_SET_IN_HALT
+This ioctl function cancels USBTMC_IOCTL_READ/USBTMC_IOCTL_WRITE functions.
+Internal error flags are set to -ECANCELED. A subsequent call to USBTMC_IOCTL_READ
+or USBTMC_IOCTL_WRITE_RESULT will return -ECANCELED with information about current
+transferred data.
 
+
+### New for IVI: ioctl USBTMC_IOCTL_CLEANUP_IO
+This ioctl function kills all submitted urbs to OUT and IN pipe, and clears all 
+received data from IN pipe. The *Internal transfer counters* are reset.
+
+### New for IVI: ioctl USBTMC_IOCTL_SET_OUT_HALT
+This ioctl sends a SET_FEATURE(HALT) request to the OUT endpoint. The ioctl is
+useful for test purpose to simulate a device that can not receive any data due
+to an error condition.
+
+
+### New for IVI: ioctl USBTMC_IOCTL_SET_IN_HALT
+This ioctl sends a SET_FEATURE(HALT) request to the IN endpoint. The ioctl is
+useful for test purpose to simulate a device that can not send any data due to
+and error condition.
 
 
 ## Issues and enhancement requests
