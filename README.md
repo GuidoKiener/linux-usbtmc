@@ -353,7 +353,7 @@ not allow to submit an urb.
 
 When received data is already available (triggered by a previous async call)
 the function returns available data. The member *usbtmc_message.transferred*
-returns the number of received bytes. Ih this case *usbtmc_message.message* 
+returns the number of received bytes. In this case *usbtmc_message.message* 
 pointer must be valid.
 
 POLLIN | POLLRDNORM are signaled  when at least one urb has completed 
