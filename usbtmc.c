@@ -38,11 +38,14 @@
 #define USBTMC_HEADER_SIZE	12
 #define USBTMC_MINOR_BASE	176
 
+#define VERBOSE 0
+
 /*
  * Size of driver internal IO buffer. Must be multiple of 4 and at least as
  * large as wMaxPacketSize (which is usually 512 bytes).
  */
-#define USBTMC_SIZE_IOBUFFER	2048
+//#define USBTMC_SIZE_IOBUFFER	2048
+#define USBTMC_SIZE_IOBUFFER	(1024*64)
 
 /* Minimum USB timeout (in milliseconds) */
 #define USBTMC_MIN_TIMEOUT	500
@@ -60,7 +63,7 @@ MODULE_PARM_DESC(usb_timeout, "USB timeout in milliseconds");
 /* Max number of urbs used in write transfers */
 #define MAX_URBS_IN_FLIGHT	16
 /* I/O buffer size used in generic read/write functions */
-#define BULKSIZE		4096
+#define BULKSIZE		(4096)
 
 /*
  * Maximum number of read cycles to empty bulk in endpoint during CLEAR and
@@ -1276,7 +1279,7 @@ static ssize_t usbtmc_ioctl_generic_read(struct usbtmc_file_data *file_data,
 			this_part = urb->actual_length;
 		else
 			this_part = remaining;
-#if 0
+#if VERBOSE
 		print_hex_dump(KERN_DEBUG, "usbtmc ", DUMP_PREFIX_NONE, 16, 1,
 			urb->transfer_buffer, this_part, true);
 #endif
@@ -1468,7 +1471,7 @@ static ssize_t usbtmc_ioctl_generic_write(struct usbtmc_file_data *file_data,
 			up(&file_data->limit_write_sem);
 			goto error;
 		}
-#if 0
+#if VERBOSE
 		print_hex_dump(KERN_DEBUG, "usbtmc ", DUMP_PREFIX_NONE,
 			16, 1, buffer, this_part, true);
 #endif
