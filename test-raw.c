@@ -741,6 +741,8 @@ int main () {
   time = getTS_usec();
   assert(rv > 0);
   assert(rv == n+bigsize);
+  any_system_error(); /* wait until file is written */
+
   rv = tmc_send("mmem:data? 'test.txt'");
   assert(rv > 0);
   getTS_usec(); /* initialize time stamp */
@@ -766,6 +768,8 @@ int main () {
   tmc_raw_write(sBigSend, n+bigsize, &sent);
   time = getTS_usec();
   assert(sent == (n+bigsize));
+  any_system_error(); /* wait until file is written */
+
   tmc_raw_send("mmem:data? 'test.txt'");
   getTS_usec(); /* initialize time stamp */
   tmc_raw_read(sBigReceive, bigsize + MAX_BL, &received);
