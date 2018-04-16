@@ -70,8 +70,9 @@ struct usbtmc_header {
 /*
  * usbtmc_message->flags:
  */
-#define USBTMC_FLAG_ASYNC	0x0001
-#define USBTMC_FLAG_APPEND	0x0002
+#define USBTMC_FLAG_ASYNC		0x0001
+#define USBTMC_FLAG_APPEND		0x0002
+#define USBTMC_FLAG_IGNORE_TRAILER	0x0004
 
 struct usbtmc_message {
 	void *message; /* pointer to header and data */
@@ -112,7 +113,6 @@ struct usbtmc_message {
 
 #define USBTMC_IOCTL_CANCEL_IO		_IO(USBTMC_IOC_NR, 35)
 #define USBTMC_IOCTL_CLEANUP_IO		_IO(USBTMC_IOC_NR, 36)
-//#define USBTMC_IOCTL_CLEAR_RESULT	USBTMC_IOCTL_CLEANUP_IO
 
 /* Driver encoded usb488 capabilities */
 #define USBTMC488_CAPABILITY_TRIGGER         1

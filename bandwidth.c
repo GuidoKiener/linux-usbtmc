@@ -247,18 +247,18 @@ int tmc_raw_read_async_result(char *msg, __u32 max_len, __u32 *received)
 	
 	/* TODO: This algorithm is subject to change and not correct yet.
 	 */
-	while (expected_size > 0) {
+	if (retval == 0) {
+		// No short packet or ZLP received => ready
 		data.message = msg + total;
 		data.transfer_size = expected_size;
-		data.flags = 0; /* synchronous now. Which timeout?*/
+		data.flags = USBTMC_FLAG_IGNORE_TRAILER; /* sync. Which timeout? */
 		retval = ioctl(fd,USBTMC_IOCTL_READ, &data);
 		total += data.transferred;
 		if (retval < 0) {
-			goto exit;
+			retval = -errno;
 		}
-		if (data.transferred == 0 || data.transferred > expected_size)
-			break;
-		expected_size -= data.transferred;
+		assert(retval == 1); // must be short packet or ZLP now.
+		retval = 0;
 	}
 exit:	
 	if (received)
@@ -395,20 +395,19 @@ static int tmc_raw_read(char *msg, __u32 max_len, __u32 *received)
 	memcpy(msg, (char*)data.message + HEADER_SIZE, data.transferred);
 	total = data.transferred;
 	expected_size -= data.transferred;
-	
-	while (expected_size > 0) {
+
+	if (retval == 0) {
+		// No short packet or ZLP received => ready
 		data.message = msg + total;
 		data.transfer_size = expected_size;
-		data.flags = 0; /* sync */
+		data.flags = USBTMC_FLAG_IGNORE_TRAILER; /* sync */
 		retval = ioctl(fd,USBTMC_IOCTL_READ, &data);
 		total += data.transferred;
 		if (retval < 0) {
 			retval = -errno;
-			goto exit;
 		}
-		if (data.transferred == 0 || data.transferred > expected_size)
-			break;
-		expected_size -= data.transferred;
+		assert(retval == 1); // must be short packet or ZLP now.
+		retval = 0;
 	}
 exit:	
 	if (received)
@@ -451,7 +450,7 @@ static void any_system_error()
   tmc_raw_send("system:error?\n");
   rv = tmc_raw_read(buf,MAX_BL, &received);
   if (rv < 0 || received == 0) {
-	printf("read failed: rv=%d errno=%d recv=%u\n", rv, errno, received);
+	printf("system error read failed: rv=%d errno=%d recv=%u\n", rv, errno, received);
 	exit(1);
   }
   rv = sscanf(buf, "%d,", &res);
