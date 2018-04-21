@@ -174,6 +174,7 @@ struct usbtmc_file_data {
 	/* data for generic_read */
 	u64 in_transfer_size;
 	int in_status;
+	int in_urbs_used;
 	struct usb_anchor in_anchor;
 	wait_queue_head_t wait_bulk_in;
 };
@@ -1075,6 +1076,7 @@ static int usbtmc_flush(struct file *file, fl_owner_t id)
 	spin_lock_irq(&file_data->err_lock);
 	file_data->in_status = 0; // TODO: This is nonsense anyway!!!!
 	file_data->in_transfer_size = 0;
+	file_data->in_urbs_used = 0;
 	file_data->out_status = 0;
 	file_data->out_transfer_size = 0;
 	spin_unlock_irq(&file_data->err_lock);
@@ -1093,7 +1095,7 @@ static void usbtmc_read_bulk_cb(struct urb *urb)
 
 	/* sync/async unlink faults aren't errors */
 	if (status) {
-		if (!(status == -ENOENT ||
+		if (!( /*status == -ENOENT || */
 			status == -ECONNRESET ||
 			status == -EREMOTEIO || /* Short packet */
 			status == -ESHUTDOWN))
@@ -1116,9 +1118,8 @@ static void usbtmc_read_bulk_cb(struct urb *urb)
 	usb_anchor_urb(urb, &file_data->in_anchor);
 
 	wake_up_interruptible(&file_data->wait_bulk_in);
-	//wake_up(&data->wait_bulk_in);
 	//TODO: if (usb_anchor_empty(&data->submitted))
-	wake_up_interruptible(&file_data->data->waitq); // TODO: file specific wakeup?
+	wake_up_interruptible(&file_data->data->waitq);
 }
 
 static inline bool usbtmc_do_transfer(struct usbtmc_file_data *file_data)
@@ -1160,13 +1161,17 @@ static ssize_t usbtmc_ioctl_generic_read(struct usbtmc_file_data *file_data,
 	max_transfer_size = msg.transfer_size;
 
 	if (msg.flags & USBTMC_FLAG_IGNORE_TRAILER) {
-		/* trailing bytes are truncated until short packet */
+		/* The device may send extra alignment bytes (up to 
+		 * wMaxPacketSize – 1) to avoid sending a zero-length 
+		 * packet 
+		 */
 		remaining = msg.transfer_size;
-		max_transfer_size += (data->wMaxPacketSize - 1);
+		if ((max_transfer_size % data->wMaxPacketSize) == 0)
+			max_transfer_size += (data->wMaxPacketSize - 1);
 	}
 	else {
+		/* round down to bufsize to avoid truncated data left */
 		if (max_transfer_size > bufsize) {
-			/* round down to bufsize to avoid truncated urbs */
 			max_transfer_size =
 				roundup(max_transfer_size + 1 - bufsize,
 					bufsize);
@@ -1175,32 +1180,40 @@ static ssize_t usbtmc_ioctl_generic_read(struct usbtmc_file_data *file_data,
 	}
 
 	spin_lock_irq(&file_data->err_lock);
+
 	if (msg.flags & USBTMC_FLAG_ASYNC) {
 		if (usb_anchor_empty(&file_data->in_anchor)) {
-			bufcount = max_transfer_size / bufsize;
+			again = 1;
+		}
+		
+		if (file_data->in_urbs_used == 0) {
 			file_data->in_transfer_size = 0;
 			file_data->in_status = 0;
-			again = 1;
-		} else {
-			bufcount = 0;
 		}
-
-		if (bufcount > MAX_URBS_IN_FLIGHT)
-			bufcount = MAX_URBS_IN_FLIGHT;
-		//TODO: limit repeated async calls to avoid unlimited urbs.
 	} else {
-		if (max_transfer_size == 0)
-			bufcount = 0;
-		if (max_transfer_size > bufsize)
-			bufcount++;
 		file_data->in_transfer_size = 0;
 		file_data->in_status = 0;
 	}
+	
+	if (max_transfer_size == 0) {
+		bufcount = 0;
+	} else {
+		bufcount = roundup(max_transfer_size, bufsize) / bufsize;
+		if (bufcount > file_data->in_urbs_used)
+			bufcount -= file_data->in_urbs_used;
+		else
+			bufcount = 0;
+
+		if (bufcount + file_data->in_urbs_used > MAX_URBS_IN_FLIGHT) {
+			bufcount = MAX_URBS_IN_FLIGHT - 
+					file_data->in_urbs_used;
+		}
+	}
 	spin_unlock_irq(&file_data->err_lock);
 
-	dev_dbg(dev, "%s: requested=%llu flags=0x%X size=%llu bufs=%d\n",
+	dev_dbg(dev, "%s: requested=%llu flags=0x%X size=%llu bufs=%d used=%d\n",
 		__func__, (u64)msg.transfer_size, (unsigned int)msg.flags,
-		max_transfer_size, bufcount);
+		max_transfer_size, bufcount, file_data->in_urbs_used);
 
 	while (bufcount > 0) {
 		u8 *dmabuf = NULL;
@@ -1226,11 +1239,14 @@ static ssize_t usbtmc_ioctl_generic_read(struct usbtmc_file_data *file_data,
 			usb_unanchor_urb(urb);
 			goto error;
 		}
+		file_data->in_urbs_used++;
 		bufcount--;
 	}
 
-	if (again)
+	if (again) {
+		dev_dbg(dev, "%s: ret=again\n", __func__);
 		return -EAGAIN;
+	}
 
 	if (msg.message == NULL)
 		return -EINVAL;
@@ -1273,8 +1289,12 @@ static ssize_t usbtmc_ioctl_generic_read(struct usbtmc_file_data *file_data,
 				retval = -EFAULT;
 				goto error;
 			}
+			dev_dbg(dev, "%s: (async) done=%llu ret=0\n",
+				__func__, done);
 			return 0;
 		}
+
+		file_data->in_urbs_used--;
 
 		if (max_transfer_size > urb->actual_length)
 			max_transfer_size -= urb->actual_length;
@@ -1316,9 +1336,9 @@ static ssize_t usbtmc_ioctl_generic_read(struct usbtmc_file_data *file_data,
 			break;
 		}
 
-		if ((max_transfer_size > bufsize) &&
-		     !(msg.flags & USBTMC_FLAG_ASYNC)) {
-			/* resubmit, since other buffer still not enough */
+		if (!(msg.flags & USBTMC_FLAG_ASYNC) &&
+		    max_transfer_size > (bufsize * file_data->in_urbs_used)) {
+			/* resubmit, since other buffers still not enough */
 			usb_anchor_urb(urb, &file_data->submitted);
 			retval = usb_submit_urb(urb, GFP_KERNEL);
 			if (unlikely(retval)) {
@@ -1326,6 +1346,7 @@ static ssize_t usbtmc_ioctl_generic_read(struct usbtmc_file_data *file_data,
 				usb_free_urb(urb);
 				goto error;
 			}
+			file_data->in_urbs_used++;
 		}
 		usb_free_urb(urb);
 		retval = 0;
@@ -1340,6 +1361,7 @@ error:
 	usb_kill_anchored_urbs(&file_data->submitted);
 	dev_dbg(dev, "%s: after kill\n", __func__);
 	usb_scuttle_anchored_urbs(&file_data->in_anchor);
+	file_data->in_urbs_used = 0;
 	file_data->in_status = 0; /* no spinlock needed here */
 	dev_dbg(dev, "%s: done=%llu ret=%d\n", __func__, done, retval);
 
@@ -1772,9 +1794,7 @@ static int usbtmc_ioctl_cancel_io(struct usbtmc_file_data *file_data)
 	file_data->in_status = -ECANCELED;
 	file_data->out_status = -ECANCELED;
 	spin_unlock_irq(&file_data->err_lock);
-	// TODO: Do we really catch all urbs e.g. during usbtmc_read_bulk_cb
 	usb_kill_anchored_urbs(&file_data->submitted);
-	//usb_scuttle_anchored_urbs(&file_data->in_anchor);
 	return 0;
 }
 
@@ -1789,6 +1809,8 @@ static int usbtmc_ioctl_cleanup_io(struct usbtmc_file_data *file_data)
 	file_data->out_status = 0;
 	file_data->out_transfer_size = 0;
 	spin_unlock_irq(&file_data->err_lock);
+	
+	file_data->in_urbs_used = 0;
 	return 0;
 }
 

@@ -214,6 +214,8 @@ exit:
 		*written = total;
 	}
 	// TODO: Abort BULK OUT in case of error!
+	if (retval < 0)
+		retval = -errno;
 	return retval;
 }
 
@@ -255,101 +257,6 @@ void setSRE(int val) {
 	snprintf(buf,32,"*SRE %d\n",val);
 	tmc_raw_send(buf);
 }
-
-#if 0 // see below
-int tmc_raw_read(char *msg, __u32 max_len, __u32 *received) 
-{
-	struct usbtmc_message data;
-	__u64 total = 0;
-	__u32 expected_size = 0;
-	char request[HEADER_SIZE];
-	char *buf;
-	int retval;
-	
-	if (!msg) 
-		return -EINVAL;
-	
-	buf = malloc(BULKSIZE);
-	if (!buf)
-		return -ENOMEM;
-	
-	request[0] = 2;
-	request[1] = s_tag;
-	request[2] = ~s_tag;
-	
-	s_tag++;
-	if (s_tag == 0) s_tag++;
-	
-	request[3] = 0; /* Reserved */
-	request[4] = max_len >> 0;
-	request[5] = max_len >> 8;
-	request[6] = max_len >> 16;
-	request[7] = max_len >> 24;
-	request[8] = 0x00; /* termchar enabled */
-	request[9] = 0; /* termchar */
-	request[10] = 0; /* Reserved */
-	request[11] = 0; /* Reserved */
-
-	data.message = request;
-	data.transfer_size = HEADER_SIZE;
-	data.flags = USBTMC_FLAG_ASYNC;
-
-	retval = ioctl(fd,USBTMC_IOCTL_WRITE, &data);
-	if (retval < 0) {
-		goto exit;
-	}
-
-	data.message = buf;
-	data.transfer_size = BULKSIZE;
-	data.flags = 0; /* sync */
-	retval = ioctl(fd,USBTMC_IOCTL_READ, &data);
-	if (retval < 0) {
-		goto exit;
-	}
-	
-	if (data.transferred < HEADER_SIZE) {
-		retval = -EPROTO;
-		goto exit;
-	}
-	data.transferred -= HEADER_SIZE;
-	
-	if (memcmp(request,buf,4) != 0) {
-		retval = -EPROTO; /* response out of order */
-		goto exit;
-	}
-	
-	expected_size = le32toh(*(__u32*)&buf[4]);
-	if (expected_size > max_len || data.transferred > expected_size) {
-		retval = -EPROTO; /* more data than requested */
-		goto exit;
-	}
-
-	memcpy(msg, (char*)data.message + HEADER_SIZE, data.transferred);
-	total = data.transferred;
-	expected_size -= data.transferred;
-	
-	while (expected_size > 0) {
-		data.message = msg + total;
-		data.transfer_size = expected_size;
-		data.flags = 0; /* sync */
-		retval = ioctl(fd,USBTMC_IOCTL_READ, &data);
-		total += data.transferred;
-		if (retval < 0) {
-			goto exit;
-		}
-		if (data.transferred == 0 || data.transferred > expected_size)
-			break;
-		expected_size -= data.transferred;
-	}
-exit:	
-	if (received)
-		*received = (__u32)total;
-
-	// TODO: In case of error abort bulk in.
-	free(buf);
-	return retval;
-}
-#endif
 
 static int tmc_raw_read_async_start(__u32 max_len)
 {
@@ -449,20 +356,36 @@ int tmc_raw_read_async_result(char *msg, __u32 max_len, __u32 *received)
 	total = data.transferred;
 	expected_size -= data.transferred;
 	
-	/* TODO: This algorithm is subject to change and not correct yet.
-	 */
-	while (expected_size > 0) {
-		data.message = msg + total;
-		data.transfer_size = expected_size;
-		data.flags = 0; /* synchronous now. Which timeout?*/
-		retval = ioctl(fd,USBTMC_IOCTL_READ, &data);
-		total += data.transferred;
-		if (retval < 0) {
-			goto exit;
-		}
-		if (data.transferred == 0 || data.transferred > expected_size)
-			break;
-		expected_size -= data.transferred;
+	if (retval == 0) {
+		// No short packet or ZLP received => ready
+		do {
+			data.message = msg + total;
+			data.transfer_size = expected_size;
+			data.flags = USBTMC_FLAG_ASYNC|USBTMC_FLAG_IGNORE_TRAILER;
+			retval = ioctl(fd,USBTMC_IOCTL_READ, &data);
+			if (retval < 0) {
+				if (errno == EAGAIN) {
+					struct pollfd pfd;
+					pfd.fd = fd;
+					pfd.events = POLLIN|POLLERR|POLLHUP;
+					retval = poll(&pfd,1,100); // should not take longer!
+					if (retval!=1) {
+						ioctl(fd,USBTMC_IOCTL_CLEANUP_IO);
+						retval = -ETIMEDOUT;
+						goto exit;
+					}
+					retval = 0;
+					continue; // try again!
+				}
+				retval = -errno;
+				ioctl(fd,USBTMC_IOCTL_CLEANUP_IO);
+				goto exit;
+			}
+			total += data.transferred;
+			expected_size -= data.transferred;
+		} while (retval == 0);
+		assert(retval == 1); // must be short packet or ZLP now.
+		retval = 0;
 	}
 exit:	
 	if (received)
@@ -473,6 +396,7 @@ exit:
 	return retval;
 }
 
+#if 1
 static int tmc_raw_read(char *msg, __u32 max_len, __u32 *received)
 {
 	struct pollfd pfd;
@@ -525,6 +449,102 @@ exit:
 	
 	
 }
+#else
+static int tmc_raw_read(char *msg, __u32 max_len, __u32 *received) 
+{
+	struct usbtmc_message data;
+	__u64 total = 0;
+	__u32 expected_size = 0;
+	char request[HEADER_SIZE];
+	char *buf;
+	int retval;
+	
+	if (!msg) 
+		return -EINVAL;
+	
+	buf = malloc(BULKSIZE);
+	if (!buf)
+		return -ENOMEM;
+	
+	request[0] = 2;
+	request[1] = s_tag;
+	request[2] = ~s_tag;
+	
+	s_tag++;
+	if (s_tag == 0) s_tag++;
+	
+	request[3] = 0; /* Reserved */
+	request[4] = max_len >> 0;
+	request[5] = max_len >> 8;
+	request[6] = max_len >> 16;
+	request[7] = max_len >> 24;
+	request[8] = 0x00; /* termchar enabled */
+	request[9] = 0; /* termchar */
+	request[10] = 0; /* Reserved */
+	request[11] = 0; /* Reserved */
+
+	data.message = request;
+	data.transfer_size = HEADER_SIZE;
+	data.flags = USBTMC_FLAG_ASYNC;
+
+	retval = ioctl(fd,USBTMC_IOCTL_WRITE, &data);
+	if (retval < 0) {
+		retval = -errno;
+		goto exit;
+	}
+
+	data.message = buf;
+	data.transfer_size = BULKSIZE;
+	data.flags = 0; /* sync */
+	retval = ioctl(fd,USBTMC_IOCTL_READ, &data);
+	if (retval < 0) {
+		retval = -errno;
+		goto exit;
+	}
+	
+	if (data.transferred < HEADER_SIZE) {
+		retval = -EPROTO;
+		goto exit;
+	}
+	data.transferred -= HEADER_SIZE;
+	
+	if (memcmp(request,buf,4) != 0) {
+		retval = -EPROTO; /* response out of order */
+		goto exit;
+	}
+	
+	expected_size = le32toh(*(__u32*)&buf[4]);
+	if (expected_size > max_len || data.transferred > expected_size) {
+		retval = -EPROTO; /* more data than requested */
+		goto exit;
+	}
+
+	memcpy(msg, (char*)data.message + HEADER_SIZE, data.transferred);
+	total = data.transferred;
+	expected_size -= data.transferred;
+
+	if (retval == 0) {
+		// No short packet or ZLP received => ready
+		data.message = msg + total;
+		data.transfer_size = expected_size;
+		data.flags = USBTMC_FLAG_IGNORE_TRAILER; /* sync */
+		retval = ioctl(fd,USBTMC_IOCTL_READ, &data);
+		total += data.transferred;
+		if (retval < 0) {
+			retval = -errno;
+		}
+		assert(retval == 1); // must be short packet or ZLP now.
+		retval = 0;
+	}
+exit:	
+	if (received)
+		*received = (__u32)total;
+
+	// TODO: In case of error abort bulk in.
+	free(buf);
+	return retval;
+}
+#endif
 
 static int tmc_read(char *msg, __u32 max_len, __u32 *received)
 {

@@ -245,18 +245,34 @@ int tmc_raw_read_async_result(char *msg, __u32 max_len, __u32 *received)
 	total = data.transferred;
 	expected_size -= data.transferred;
 	
-	/* TODO: This algorithm is subject to change and not correct yet.
-	 */
 	if (retval == 0) {
 		// No short packet or ZLP received => ready
-		data.message = msg + total;
-		data.transfer_size = expected_size;
-		data.flags = USBTMC_FLAG_IGNORE_TRAILER; /* sync. Which timeout? */
-		retval = ioctl(fd,USBTMC_IOCTL_READ, &data);
-		total += data.transferred;
-		if (retval < 0) {
-			retval = -errno;
-		}
+		do {
+			data.message = msg + total;
+			data.transfer_size = expected_size;
+			data.flags = USBTMC_FLAG_ASYNC|USBTMC_FLAG_IGNORE_TRAILER;
+			retval = ioctl(fd,USBTMC_IOCTL_READ, &data);
+			if (retval < 0) {
+				if (errno == EAGAIN) {
+					struct pollfd pfd;
+					pfd.fd = fd;
+					pfd.events = POLLIN|POLLERR|POLLHUP;
+					retval = poll(&pfd,1,100); // should not take longer!
+					if (retval!=1) {
+						ioctl(fd,USBTMC_IOCTL_CLEANUP_IO);
+						retval = -ETIMEDOUT;
+						goto exit;
+					}
+					retval = 0;
+					continue; // try again!
+				}
+				retval = -errno;
+				ioctl(fd,USBTMC_IOCTL_CLEANUP_IO);
+				goto exit;
+			}
+			total += data.transferred;
+			expected_size -= data.transferred;
+		} while (retval == 0);
 		assert(retval == 1); // must be short packet or ZLP now.
 		retval = 0;
 	}
