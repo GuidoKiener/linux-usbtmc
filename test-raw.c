@@ -55,6 +55,8 @@ const cap_entryT cap_list[NUM_CAPS] = {
 static int fd;
 static const char star[] = {' ','*'};
 static __u8 s_tag = 0x01;
+static __u8 s_tag_in = 0;
+static __u8 s_tag_out = 0;
 
 static void show_caps(unsigned char caps) {
 	int i;
@@ -148,28 +150,30 @@ unsigned int get_stb() {
 }
 
 /* Send string to T&M instrument */
-static int tmc_raw_write_common(char *msg, __u32 length, __u32 *written, int async) 
+static int tmc_raw_write_common(char *msg, __u32 length, __u32 *written, int async)
 {
 	struct usbtmc_message data;
 	__u64 total = 0;
 	int retval = 0;
 	__u32 addflag = (async)?(USBTMC_FLAG_ASYNC):0;
-	char buf[1024]; 
-	/* Size of first package is USB 3.0 max packet size. 
+	char buf[1024];
+	/* Size of first package is USB 3.0 max packet size.
 	 * Use only multiple of max package size (64,512,1024) to avoid sending a short package.
 	 * Only last package can be a short package.
 	 */
-	
-	if (!msg) 
+
+	if (!msg)
 		return -EINVAL;
-	
+
 	buf[0] = 1;
 	buf[1] = s_tag;
 	buf[2] = ~s_tag;
-	
+
+	s_tag_out = s_tag;
+
 	s_tag++;
 	if (s_tag == 0) s_tag++;
-	
+
 	buf[3] = 0; /* Reserved */
 	buf[4] = length >> 0;
 	buf[5] = length >> 8;
@@ -182,14 +186,14 @@ static int tmc_raw_write_common(char *msg, __u32 length, __u32 *written, int asy
 
 	data.message = buf;
 	data.transfer_size = length + HEADER_SIZE; /* 32 bit alignment done by driver */
-	
+
 	if (data.transfer_size <= sizeof(buf)) {
 		data.flags = addflag; /* synchron */
 		memcpy(&buf[HEADER_SIZE], msg, length);
 		retval = ioctl(fd,USBTMC_IOCTL_WRITE, &data);
 		goto exit;
 	}
-	
+
 	data.transfer_size = sizeof(buf);
 	data.flags = (USBTMC_FLAG_ASYNC | addflag); /* asynchron */
 	memcpy(&buf[HEADER_SIZE], msg, sizeof(buf)-HEADER_SIZE);
@@ -239,14 +243,14 @@ static int tmc_raw_write_result_async(__u32 *written)
 	return retval;
 }
 
-static int tmc_raw_send(char *msg) 
+static int tmc_raw_send(char *msg)
 {
 	__u32 written;
 	int retval = tmc_raw_write(msg, strlen(msg), &written);
 	return retval;
 }
 
-static int tmc_send(char *msg) 
+static int tmc_send(char *msg)
 {
 	int retval = write(fd, msg, strlen(msg));
 	return retval;
@@ -263,14 +267,16 @@ static int tmc_raw_read_async_start(__u32 max_len)
 	struct usbtmc_message data;
 	char request[HEADER_SIZE];
 	int retval;
-	
+
 	request[0] = 2;
 	request[1] = s_tag;
 	request[2] = ~s_tag;
-	
+
+	s_tag_in = s_tag;
+
 	s_tag++;
 	if (s_tag == 0) s_tag++;
-	
+
 	request[3] = 0; /* Reserved */
 	request[4] = max_len >> 0;
 	request[5] = max_len >> 8;
@@ -302,32 +308,32 @@ static int tmc_raw_read_async_start(__u32 max_len)
 	return retval;
 }
 
-int tmc_raw_read_async_result(char *msg, __u32 max_len, __u32 *received) 
+int tmc_raw_read_async_result(char *msg, __u32 max_len, __u32 *received)
 {
 	struct usbtmc_message data;
 	__u64 total = 0;
 	__u32 expected_size = 0;
 	char *buf;
 	int retval;
-	
-	if (!msg) 
+
+	if (!msg)
 		return -EINVAL;
-	
+
 	buf = malloc(BULKSIZE);
 	if (!buf)
 		return -ENOMEM;
-	
+
 	data.message = buf;
 	/* Attention! must be multiple of BULKSIZE otherwise urb data is truncated.
 	 * Note that kernel driver only wants to copy a complete urb.
 	 */
-	data.transfer_size = BULKSIZE; 
+	data.transfer_size = BULKSIZE;
 	data.flags = USBTMC_FLAG_ASYNC; /* async */
 	retval = ioctl(fd,USBTMC_IOCTL_READ, &data);
 	if (retval < 0) {
 		goto exit;
 	}
-	
+
 	if (data.transferred < HEADER_SIZE) {
 		retval = -EPROTO;
 		goto exit;
@@ -338,13 +344,13 @@ int tmc_raw_read_async_result(char *msg, __u32 max_len, __u32 *received)
 		retval = -EPROTO; /* response out of order */
 		goto exit;
 	}
-	
-#if 0 // This sample does not check sequence number here.	
+
+#if 0 // This sample does not check sequence number here.
 	if (memcmp(request,buf,4) != 0) {
 		retval = -EPROTO; /* response out of order */
 		goto exit;
 	}
-#endif	
+#endif
 
 	expected_size = le32toh(*(__u32*)&buf[4]);
 	if (expected_size > max_len || data.transferred > expected_size) {
@@ -355,7 +361,7 @@ int tmc_raw_read_async_result(char *msg, __u32 max_len, __u32 *received)
 	memcpy(msg, (char*)data.message + HEADER_SIZE, data.transferred);
 	total = data.transferred;
 	expected_size -= data.transferred;
-	
+
 	if (retval == 0) {
 		// No short packet or ZLP received => ready
 		do {
@@ -387,7 +393,7 @@ int tmc_raw_read_async_result(char *msg, __u32 max_len, __u32 *received)
 		assert(retval == 1); // must be short packet or ZLP now.
 		retval = 0;
 	}
-exit:	
+exit:
 	if (received)
 		*received = (__u32)total;
 
@@ -403,7 +409,7 @@ static int tmc_raw_read(char *msg, __u32 max_len, __u32 *received)
 	int timeout = 2000;
 	int err;
 	__u32 transferred = 0;
-	
+
 	int rv = tmc_raw_read_async_start(max_len);
 	if (rv < 0) {
 		printf("tmc_raw_read failed to start: errno=%d\n", errno);
@@ -444,13 +450,13 @@ static int tmc_raw_read(char *msg, __u32 max_len, __u32 *received)
 exit:
 	if (received)
 		*received = transferred;
-	
+
 	return rv;
-	
-	
+
+
 }
 #else
-static int tmc_raw_read(char *msg, __u32 max_len, __u32 *received) 
+static int tmc_raw_read(char *msg, __u32 max_len, __u32 *received)
 {
 	struct usbtmc_message data;
 	__u64 total = 0;
@@ -458,21 +464,23 @@ static int tmc_raw_read(char *msg, __u32 max_len, __u32 *received)
 	char request[HEADER_SIZE];
 	char *buf;
 	int retval;
-	
-	if (!msg) 
+
+	if (!msg)
 		return -EINVAL;
-	
+
 	buf = malloc(BULKSIZE);
 	if (!buf)
 		return -ENOMEM;
-	
+
 	request[0] = 2;
 	request[1] = s_tag;
 	request[2] = ~s_tag;
-	
+
+	s_tag_in = s_tag;
+
 	s_tag++;
 	if (s_tag == 0) s_tag++;
-	
+
 	request[3] = 0; /* Reserved */
 	request[4] = max_len >> 0;
 	request[5] = max_len >> 8;
@@ -501,18 +509,18 @@ static int tmc_raw_read(char *msg, __u32 max_len, __u32 *received)
 		retval = -errno;
 		goto exit;
 	}
-	
+
 	if (data.transferred < HEADER_SIZE) {
 		retval = -EPROTO;
 		goto exit;
 	}
 	data.transferred -= HEADER_SIZE;
-	
+
 	if (memcmp(request,buf,4) != 0) {
 		retval = -EPROTO; /* response out of order */
 		goto exit;
 	}
-	
+
 	expected_size = le32toh(*(__u32*)&buf[4]);
 	if (expected_size > max_len || data.transferred > expected_size) {
 		retval = -EPROTO; /* more data than requested */
@@ -536,7 +544,7 @@ static int tmc_raw_read(char *msg, __u32 max_len, __u32 *received)
 		assert(retval == 1); // must be short packet or ZLP now.
 		retval = 0;
 	}
-exit:	
+exit:
 	if (received)
 		*received = (__u32)total;
 
@@ -614,7 +622,7 @@ static void any_system_error()
   char buf[MAX_BL];
   int rv, res;
   __u32 received = 0;
-  
+
   tmc_raw_send("system:error?\n");
   rv = tmc_raw_read(buf,MAX_BL, &received);
   if (rv < 0 || received == 0) {
@@ -622,8 +630,10 @@ static void any_system_error()
 	exit(1);
   }
   rv = sscanf(buf, "%d,", &res);
-  if (res != 0 || rv < 1)
+  if (res != 0 || rv < 1) {
 	printf("syst:err? = %.*s", received, buf);
+	exit(1);
+  }
 }
 
 int main () {
@@ -631,7 +641,7 @@ int main () {
   __u32 bigsize = 4000000;
   char *sBigSend = malloc(bigsize + MAX_BL); /* freed when program exits */
   char *sBigReceive = malloc(bigsize + MAX_BL); /* freed when program exits */
-  
+
   unsigned int tmp,tmp1,caps;
   __u32 len,n, digits;
   __u8 stb;
@@ -647,7 +657,7 @@ int main () {
 	perror("failed to open device");
 	exit(1);
   }
-  
+
   /***********************************************************
    * 1. Prepare interface
    ***********************************************************/
@@ -683,7 +693,7 @@ int main () {
   time = getTS_usec();
   printf("*OPC? Latency = %.0f us per call with read/write functions\n", time/10.0);
   any_system_error();
-  
+
   puts("*******************************************************************");
   puts("2. Performance test with raw read/write");
   getTS_usec(); /* initialize time stamp */
@@ -703,7 +713,7 @@ int main () {
   rv = tmc_read(buf,MAX_BL, &received);
   assert(rv >= 0 && received > 0);
   any_system_error();
-    
+
   puts("*******************************************************************");
   puts("4a. Test SRQ with poll mode");
   show_stb(get_stb());
@@ -721,7 +731,7 @@ int main () {
   tmc_raw_read(buf,MAX_BL, &received);
   setSRE(0x00);
   any_system_error();
-  
+
   puts("*******************************************************************");
   puts("4b. Test SRQ with USBTMC488_IOCTL_WAIT_SRQ");
   setSRE(0x10); /* Do SRQ when MAV set (message available) */
@@ -738,14 +748,14 @@ int main () {
   tmc_raw_read(buf,MAX_BL, &received);
   setSRE(0x00);
   any_system_error();
-  
+
   getTS_usec(); /* initialise time stamp */
   rv = wait_for_srq(200);
   time = getTS_usec() / 1000.0;
   assert(rv == -1 && errno == ETIMEDOUT);
   printf("Is time = %f near to 200 ms?\n", time);
   assert( time >= 180.0 && time <= 1000.0 );
-  
+
   any_system_error();
 
   puts("*******************************************************************");
@@ -753,9 +763,9 @@ int main () {
   /* prepare big send data */
   digits = sprintf( buf, "%u", bigsize );
   n = sprintf( sBigSend,":MMEM:DATA 'test.txt',#%u%s", digits, buf );
-  for (i = 0; i < bigsize; i++) 
+  for (i = 0; i < bigsize; i++)
 	sBigSend[n+i] = (char)i;
-   
+
   getTS_usec(); /* initialize time stamp */
   rv = write(fd, sBigSend, n+bigsize);
   time = getTS_usec();
@@ -775,15 +785,15 @@ int main () {
   printf("Standard I/O: send rate=%.3f MB/s, read rate %.3f MB/s\n", 
 	bigsize * (1.0e6/(1024*1024)) / time, bigsize * (1.0e6/(1024*1024)) / time2);
   any_system_error();
-  
+
   puts("*******************************************************************");
   puts("5b. Send and receive big data and verify content with raw read/write");
   /* prepare big send data */
   digits = sprintf( buf, "%u", bigsize );
   n = sprintf( sBigSend,":MMEM:DATA 'test.txt',#%u%s", digits, buf );
-  for (i = 0; i < bigsize; i++) 
+  for (i = 0; i < bigsize; i++)
 	sBigSend[n+i] = (char)i+10;
-   
+
   getTS_usec(); /* initialize time stamp */
   tmc_raw_write(sBigSend, n+bigsize, &sent);
   time = getTS_usec();
@@ -798,16 +808,16 @@ int main () {
   	perror("data mismatch");
 	exit(1);
   }
-  printf("Raw I/O: send rate=%.3f MB/s, read rate %.3f MB/s\n", 
+  printf("Raw I/O: send rate=%.3f MB/s, read rate %.3f MB/s\n",
 	bigsize * (1.0e6/(1024*1024)) / time, bigsize * (1.0e6/(1024*1024)) / time2);
   any_system_error();
-  
+
   puts("*******************************************************************");
   puts("5c. Send and receive big data and verify content with async raw read/write");
   /***********************************************************
    * 5c. asynchronous raw read/write
    *     Note that async write does not send more then 16 * 4k
-   ***********************************************************/ 
+   ***********************************************************/
   /* test asynchronous write and reduce bigsize for simple testing */
   if (bigsize > (15 * 4096))
 	  bigsize = 15 * 4096;
@@ -816,7 +826,7 @@ int main () {
   n = sprintf( sBigSend,":MMEM:DATA 'test.txt',#%u%s", digits, buf );
   for (i = 0; i < bigsize; i++) 
 	sBigSend[n+i] = (char)i+5;
-  
+
   getTS_usec(); /* initialize time stamp */
   rv = tmc_raw_write_async(sBigSend,n+bigsize, &sent);
   if (rv < 0 || !wait_for_write(500)) {
@@ -855,7 +865,7 @@ int main () {
   }
   printf("Async read result: rv=%d received=%u expected=%u\n", rv, received, bigsize + 3 + digits);
   assert(received == (bigsize + 3 + digits));
-  
+
   if ( memcmp(&sBigSend[n], &sBigReceive[2+digits], bigsize) != 0) {
   	perror("data mismatch");
 	exit(1);
@@ -865,6 +875,7 @@ int main () {
   puts("6a.  Test canceling asynchronous write");
   rv = tmc_raw_write_async(sBigSend,n+bigsize, &sent);
   assert(rv == 0);
+  usleep(100);
   rv = ioctl(fd, USBTMC_IOCTL_CANCEL_IO);
   assert(rv == 0);
   rv = wait_for_write(10000);
@@ -877,8 +888,19 @@ int main () {
   rv = ioctl(fd, USBTMC_IOCTL_CLEANUP_IO);
   assert(rv == 0);
 
+  rv = ioctl(fd, USBTMC_IOCTL_ABORT_BULK_OUT_TAG, &s_tag_out);
+  assert(rv == 0); // If you hang here, then reduce or increase usleep above!
+
+  /* Send device clear. Normally not needed */
+  rv = ioctl(fd,USBTMC_IOCTL_CLEAR);
+  assert(rv == 0);
+
+  any_system_error();
+
   puts("*******************************************************************");
   puts("6b.  Test canceling asynchronous read");
+  tmc_raw_send("mmem:data? 'test.txt'");
+
   rv = tmc_raw_read_async_start(bigsize + MAX_BL);
   assert(rv == 0);
   rv = ioctl(fd, USBTMC_IOCTL_CANCEL_IO);
@@ -892,7 +914,30 @@ int main () {
 
   rv = ioctl(fd, USBTMC_IOCTL_CLEANUP_IO);
   assert(rv == 0);
-  
+
+  rv = ioctl(fd, USBTMC_IOCTL_ABORT_BULK_IN_TAG, &s_tag_in);
+  assert(rv == 0);
+
+  any_system_error();
+
+  if (0)
+  {
+	// Special test "test:scpi:internal:sync" == "sleep"
+	__u8 tag;
+	rv = tmc_raw_send("test:scpi:internal:sync 8000");
+	assert(rv == 0);
+
+	rv = tmc_raw_send("test:scpi:internal:sync 100");
+	assert(rv == 0);
+	tag = s_tag_out;
+	rv = tmc_raw_send("test:scpi:internal:sync 200");
+	assert(rv != 0 );
+	rv = ioctl(fd, USBTMC_IOCTL_ABORT_BULK_OUT_TAG, &tag);
+	assert(rv == 0);
+	rv = ioctl(fd, USBTMC_IOCTL_ABORT_BULK_OUT_TAG, &s_tag_out);
+	assert(rv == 0);
+  }
+
   puts("*******************************************************************");
   puts("7a.  Test error handling for OUT PIPE");
 
@@ -904,7 +949,7 @@ int main () {
   if (rv >= 0) {
 	exit(1);
   }
-  
+
   /* test error handling for raw write */
   ioctl(fd,USBTMC_IOCTL_SET_OUT_HALT); // lock bulk out
   rv = tmc_raw_send("system:error?\n");
@@ -925,7 +970,7 @@ int main () {
   /* test error handling for async raw write */
   errno = 0;
   rv = tmc_raw_write_async("123",3, &sent);
-  printf("async write should fail: rv=%d errno=%d sent=%u\n", rv, errno, sent);
+  printf("async write shall fail: rv=%d errno=%d sent=%u\n", rv, errno, sent);
   assert(rv == 0 && sent == 3);
 
   getTS_usec();
@@ -943,6 +988,7 @@ int main () {
   	perror("async send result should fail: ");
 	exit(1);
   }
+  assert(errno == EPIPE);
 
   /* test error handling for async read */
   rv = tmc_raw_read(buf,MAX_BL, &received);
@@ -951,19 +997,7 @@ int main () {
   	perror("synchron read should fail: ");
 	exit(1);
   }
-  
-#if 0
-  rv = tmc_raw_write_async(sBigSend,n+bigsize, &sent);
-  printf("async send should fail: rv=%d errno=%d sent=%u\n", rv, errno, sent);
-  // This error should be detected before everything is sent.
-  wait_for_write(500);
-  rv = tmc_raw_write_result_async(&sent);
-  printf("async result: rv=%d transferred=%u\n", rv, sent);
-  if (rv >= 0 || sent > 0) {
-  	perror("async send result should fail: ");
-	exit(1);
-  }
-#endif
+
   rv = ioctl(fd,USBTMC_IOCTL_CLEANUP_IO);
   assert(rv == 0);
 
@@ -993,15 +1027,15 @@ int main () {
   assert(rv == 0);
 
   any_system_error();
-  
+
   /* just try to read data. We should run into timeout */
   rv = tmc_raw_read(buf,MAX_BL, &received);
   printf("read should fail with timeout: rv=%d errno=%d recv=%u\n", rv, errno, received);
   assert(rv == -ETIMEDOUT);
   assert(received == 0);
-  
+
   any_system_error();
-  
+
   printf("done\n");
   close(fd);
   exit(0);

@@ -110,7 +110,10 @@ struct usbtmc_message {
 /* For test purpose only */
 #define USBTMC_IOCTL_SET_OUT_HALT	_IO(USBTMC_IOC_NR, 30)
 #define USBTMC_IOCTL_SET_IN_HALT	_IO(USBTMC_IOC_NR, 31)
+#define USBTMC_IOCTL_ABORT_BULK_OUT_TAG	_IOW(USBTMC_IOC_NR,32, __u8)
+#define USBTMC_IOCTL_ABORT_BULK_IN_TAG	_IOW(USBTMC_IOC_NR,33, __u8)
 
+/* Cancel and cleanup asynchronous calls */
 #define USBTMC_IOCTL_CANCEL_IO		_IO(USBTMC_IOC_NR, 35)
 #define USBTMC_IOCTL_CLEANUP_IO		_IO(USBTMC_IOC_NR, 36)
 
