@@ -44,7 +44,7 @@
  * Size of driver internal IO buffer. Must be multiple of 4 and at least as
  * large as wMaxPacketSize (which is usually 512 bytes).
  */
-//#define USBTMC_SIZE_IOBUFFER	2048
+//#define USBTMC_SIZE_IOBUFFER	2048 TODO
 #define USBTMC_SIZE_IOBUFFER	(1024*64)
 
 /* Minimum USB timeout (in milliseconds) */
@@ -567,6 +567,7 @@ static int usbtmc488_ioctl_wait_srq(struct usbtmc_file_data *file_data,
 	struct device *dev = &data->intf->dev;
 	int rv;
 	unsigned int timeout;
+	unsigned long expire;
 
 	if (!data->iin_ep_present) {
 		dev_dbg(dev, "no interrupt endpoint present\n");
@@ -576,13 +577,15 @@ static int usbtmc488_ioctl_wait_srq(struct usbtmc_file_data *file_data,
 	if (get_user(timeout, arg))
 		return -EFAULT;
 
+	expire = msecs_to_jiffies(timeout);
+
 	mutex_unlock(&data->io_mutex);
 
 	rv = wait_event_interruptible_timeout(
 			data->waitq,
 			atomic_read(&file_data->srq_asserted) != 0 ||
 			file_data->closing,
-			timeout);
+			expire);
 
 	mutex_lock(&data->io_mutex);
 
@@ -1167,6 +1170,13 @@ static ssize_t usbtmc_ioctl_generic_read(struct usbtmc_file_data *file_data,
 
 	spin_lock_irq(&file_data->err_lock);
 
+	if (file_data->in_status) {
+		/* return the very first error */
+		retval = file_data->in_status;
+		spin_unlock_irq(&file_data->err_lock);
+		goto error;
+	}
+
 	if (msg.flags & USBTMC_FLAG_ASYNC) {
 		if (usb_anchor_empty(&file_data->in_anchor)) {
 			again = 1;
@@ -1536,7 +1546,7 @@ exit:
 	spin_lock_irq(&file_data->err_lock);
 	if (!(msg.flags & USBTMC_FLAG_ASYNC))
 		done = file_data->out_transfer_size;
-	if (file_data->out_status)
+	if (!retval && file_data->out_status)
 		retval = file_data->out_status;
 	spin_unlock_irq(&file_data->err_lock);
 
@@ -1639,7 +1649,7 @@ usbtmc_clear_check_status:
 							  data->bulk_in),
 					  buffer, io_buffer_size,
 					  &actual, USB_CTRL_GET_TIMEOUT);
-#if 1 //VERBOSE
+#if VERBOSE
 			print_hex_dump(KERN_DEBUG, "usbtmc ", DUMP_PREFIX_NONE,
 					16, 1, buffer, actual, true);
 #endif
@@ -2612,7 +2622,7 @@ static int usbtmc_suspend(struct usb_interface *intf, pm_message_t message)
 		usbtmc_draw_down(file_data);
 	}
 	mutex_unlock(&data->io_mutex);
-	// TODO: call	usbtmc_free_int(data);
+	// TODO: call usbtmc_free_int(data);
 	return 0;
 }
 

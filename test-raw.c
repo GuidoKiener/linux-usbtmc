@@ -903,6 +903,7 @@ int main () {
 
   rv = tmc_raw_read_async_start(bigsize + MAX_BL);
   assert(rv == 0);
+  usleep(100000); // give instrument time to generate response.
   rv = ioctl(fd, USBTMC_IOCTL_CANCEL_IO);
   assert(rv == 0);
   rv = wait_for_read(10000);
