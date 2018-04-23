@@ -311,14 +311,15 @@ POLLERR is set when any urb fails. See poll() function above.
 
 ### New for IVI: ioctl USBTMC_IOCTL_WRITE_RESULT
 The ioctl function copies the current *internal transfer counter* to the 
-given __u64 pointer and returns the current error state.
+given __u64 pointer and returns the current error state. The error state
+and *internal transfer counter* is not cleared by this ioctl.
 
 
 ### New for IVI: ioctl USBTMC_IOCTL_READ
 The ioctl function uses the following struct to get generic IN bulk messages:
 ```C
-#define USBTMC_FLAG_ASYNC	0x0001
-#define USBTMC_FLAG_APPEND	0x0002
+#define USBTMC_FLAG_ASYNC          0x0001
+#define USBTMC_FLAG_IGNORE_TRAILER 0x0004
 
 struct usbtmc_message {
 	void *message; /* pointer to header and data */
@@ -331,58 +332,77 @@ In synchronous mode (flags=0) the generic read function copies max.
 *transfer_size* bytes of received data from Bulk IN to the 
 *usbtmc_message.message* pointer.
 Depending on *transfer_size* the read function submits one (<=4kB) or 
-two urbs to Bulk IN. For best performance the read function copies bytes
-from one urb to the *message* buffer while the other urb can receive data
-from the T&M device concurrently. The function waits for the end of 
+more urbs (up to 16) to Bulk IN. For best performance the read function copies 
+bytes from one urb to the *message* buffer while other urbs still can receive 
+data from the T&M device concurrently. The function waits for the end of 
 transmission or returns on error or timeout.
 The member *usbtmc_message.transferred* returns the number of received bytes.
 
 For best performance the requested transfer size should be a multiple of 4 kB.
 Please note that the driver has to round down the transfer_size to a multiple
-of 4 kByte when you use more then 4kB, since the Linux driver only detects 
-short packages, but no ZLP (zero length packages).
+of 4 kByte when you use more then 4kB, since the driver does not cache or save
+unread data.
+The flag USBTMC_FLAG_IGNORE_TRAILER can be used when the transmission size is
+already known. Then the driver does not round down the transfer_size to a multiple
+of 4 kByte, but does reserve extra space to receive the final short or zero
+length packet. Note that the instrument is allowed to send up to 
+wMaxPacketSize - 1 bytes at the end of a message to avoid sending a zero length
+packet.
 
-In asynchronous mode (flags=USBTMC_FLAG_ASYNC) the generic read function 
+In asynchronous mode (flags=USBTMC_FLAG_ASYNC) the generic read function
 is non blocking. When no received data is available, the read function 
 submits urbs as many as needed to receive *transfer_size* bytes.
-However the number of flying urbs is limited by a semaphore (TODO).
-In this case the message pointer may be NULL.
+However the number of flying urbs (=4kB) is limited to 16 even with subsequent
+calls of this ioctl.
 
-The function returns -EAGAIN when no data is available or the semaphore does
-not allow to submit an urb.
+The message pointer can be NULL when no receiving data shall be returned.
+The function returns -EAGAIN when no data is available. -EINVAL is returned when
+data is available but the message pointer is NULL.
 
-When received data is already available (triggered by a previous async call)
-the function returns available data. The member *usbtmc_message.transferred*
-returns the number of received bytes. In this case *usbtmc_message.message* 
-pointer must be valid.
+When available data is copied to a valid *usbtmc_message.message* pointer the
+member *usbtmc_message.transferred* returns the number of received bytes.
 
 POLLIN | POLLRDNORM are signaled  when at least one urb has completed 
 with received data.
 POLLOUT | POLLWRNORM are signaled when all submitted urbs IN/OUT are completed.
 POLLERR is set when any urb fails. See poll() function above.
 
+**Return values:**
+The ioctl returns 1 when a short or zero length packet is detected.
+0 is returned when the transferred size is a multiple of wMaxPacketSize.
+-EAGAIN: when no data can be read asynchronous.
+-EINVAL: when message pointer is invalid and data could be read.
+-ETIMEDOUT: when no data can be read synchronous (see USBTMC_IOCTL_SET_TIMEOUT)
+Otherwise the ioctl always returns the very first error of submitted urbs.
+(see https://www.kernel.org/doc/html/latest/driver-api/usb/error-codes.html)
 
 ### New for IVI: ioctl USBTMC_IOCTL_CANCEL_IO
 This ioctl function cancels USBTMC_IOCTL_READ/USBTMC_IOCTL_WRITE functions.
-Internal error flags are set to -ECANCELED. A subsequent call to USBTMC_IOCTL_READ
+Internal error states are set to -ECANCELED. A subsequent call to USBTMC_IOCTL_READ
 or USBTMC_IOCTL_WRITE_RESULT will return -ECANCELED with information about current
 transferred data.
 
-
 ### New for IVI: ioctl USBTMC_IOCTL_CLEANUP_IO
 This ioctl function kills all submitted urbs to OUT and IN pipe, and clears all 
-received data from IN pipe. The *Internal transfer counters* are reset.
+received data from IN pipe. The *Internal transfer counters* and error states are
+reset.
 
 ### New for IVI: ioctl USBTMC_IOCTL_SET_OUT_HALT
-This ioctl sends a SET_FEATURE(HALT) request to the OUT endpoint. The ioctl is
-useful for test purpose to simulate a device that can not receive any data due
-to an error condition.
-
+For testing: This ioctl sends a SET_FEATURE(HALT) request to the OUT endpoint. 
+The ioctl is useful for test purpose to simulate a device that can not receive
+any data due to an error condition.
 
 ### New for IVI: ioctl USBTMC_IOCTL_SET_IN_HALT
-This ioctl sends a SET_FEATURE(HALT) request to the IN endpoint. The ioctl is
-useful for test purpose to simulate a device that can not send any data due to
-and error condition.
+For testing: This ioctl sends a SET_FEATURE(HALT) request to the IN endpoint.
+The ioctl is useful for test purpose to simulate a device that can not send any
+data due to and error condition.
+
+### New for IVI: ioctl USBTMC_IOCTL_ABORT_BULK_IN_TAG
+For testing: The ioctl tries to abort a BULK IN transfer with a given tag.
+
+### New for IVI: ioctl USBTMC_IOCTL_ABORT_BULK_OUT_TAG
+For testing: The ioctl tries to abort a BULK OUT transfer with a given tag.
+
 
 
 ## Issues and enhancement requests
