@@ -141,6 +141,7 @@ struct usbtmc_device_data {
 	struct mutex io_mutex;	/* only one i/o function running at a time */
 	wait_queue_head_t waitq;
 	struct fasync_struct *fasync;
+	spinlock_t dev_lock; /* lock for file_list */
 };
 #define to_usbtmc_data(d) container_of(d, struct usbtmc_device_data, kref)
 
@@ -231,7 +232,9 @@ static int usbtmc_open(struct inode *inode, struct file *filp)
 	file_data->eom_val = data->eom_val;
 
 	INIT_LIST_HEAD(&file_data->file_elem);
+	spin_lock(&data->dev_lock);
 	list_add_tail(&file_data->file_elem, &data->file_list);
+	spin_unlock(&data->dev_lock);
 	mutex_unlock(&data->io_mutex);
 
 	/* Store pointer in file structure's private data field */
@@ -245,9 +248,16 @@ static int usbtmc_release(struct inode *inode, struct file *file)
 	struct usbtmc_file_data *file_data = file->private_data;
 
 	dev_dbg(&file_data->data->intf->dev, "%s - called\n", __func__);
+
+	/* prevent IO _AND_ usbtmc_interrupt */
 	mutex_lock(&file_data->data->io_mutex);
+	spin_lock(&file_data->data->dev_lock);
+
 	list_del(&file_data->file_elem);
+
+	spin_unlock(&file_data->data->dev_lock);
 	mutex_unlock(&file_data->data->io_mutex);
+
 	kref_put(&file_data->data->kref, usbtmc_delete);
 	file_data->data = NULL;
 	kfree(file_data);
@@ -2356,9 +2366,9 @@ static void usbtmc_interrupt(struct urb *urb)
 
 			if (data->fasync)
 				kill_fasync(&data->fasync,
-					SIGIO, POLL_IN); // TODO: POLL_PRI?
+					SIGIO, POLL_PRI);
 
-			//spin_lock(&data->err_lock); BIG TODO
+			spin_lock_irq(&data->dev_lock);
 			list_for_each(elem, &data->file_list) {
 				struct usbtmc_file_data *file_data;
 
@@ -2368,7 +2378,7 @@ static void usbtmc_interrupt(struct urb *urb)
 				file_data->srq_byte = data->iin_buffer[1];
 				atomic_set(&file_data->srq_asserted, 1);
 			}
-			//spin_unlock(&data->err_lock);
+			spin_unlock_irq(&data->dev_lock);
 
 			dev_dbg(dev, "srq received bTag %x stb %x\n",
 				(unsigned int)data->iin_buffer[0],
@@ -2443,6 +2453,7 @@ static int usbtmc_probe(struct usb_interface *intf,
 	init_waitqueue_head(&data->waitq);
 	atomic_set(&data->iin_data_valid, 0);
 	INIT_LIST_HEAD(&data->file_list);
+	spin_lock_init(&data->dev_lock);
 
 	data->zombie = 0;
 
@@ -2641,6 +2652,7 @@ static int usbtmc_pre_reset(struct usb_interface *intf)
 		return 0;
 
 	mutex_lock(&data->io_mutex);
+
 	list_for_each(elem, &data->file_list) {
 		struct usbtmc_file_data *file_data;
 
