@@ -49,24 +49,6 @@ struct usbtmc_termchar {
 	__u8 term_char_enabled; // bool
 } __attribute__ ((packed));
 
-struct usbtmc_interrupt {
-	__u8 notify1;
-	__u8 notify2;
-} __attribute__ ((packed));
-
-#if 0
-struct usbtmc_header {
-	__u8  msgid;
-	__u8  tag;
-	__u8  inv_tag;
-	__u8  res1;
-	__u32 transfer_size;
-	__u8  attributes;
-	__u8  term_char;
-	__u8  res2[2];
-} __attribute__ ((packed));
-#endif
-
 /*
  * usbtmc_message->flags:
  */
@@ -98,6 +80,7 @@ struct usbtmc_message {
 #define USBTMC_IOCTL_WRITE		_IOWR(USBTMC_IOC_NR, 13, struct usbtmc_message)
 #define USBTMC_IOCTL_READ		_IOWR(USBTMC_IOC_NR, 14, struct usbtmc_message)
 #define USBTMC_IOCTL_WRITE_RESULT	_IOWR(USBTMC_IOC_NR, 15, __u64)
+#define USBTMC_IOCTL_API_VERSION	_IOR(USBTMC_IOC_NR, 16, unsigned int)
 
 #define USBTMC488_IOCTL_GET_CAPS	_IOR(USBTMC_IOC_NR, 17, unsigned char)
 #define USBTMC488_IOCTL_READ_STB	_IOR(USBTMC_IOC_NR, 18, unsigned char)

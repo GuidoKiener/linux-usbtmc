@@ -615,6 +615,14 @@ static int set_timeout(unsigned int tmo)
 	assert(rv == 0);
 }
 
+static int show_api_version()
+{
+	unsigned int api_version;
+	int rv = ioctl(fd, USBTMC_IOCTL_API_VERSION, &api_version);
+	assert(rv == 0);
+	printf("USBTMC_API_VERSION = %u\n", api_version);
+}
+
 const size_t MAX_BL = 1024;
 
 static void any_system_error()
@@ -683,6 +691,7 @@ int main () {
   tmc_raw_read(buf,MAX_BL, &received);
   puts("*******************************************************************");
   printf("Testing device: *IDN? = %.*s", received, buf);
+  show_api_version();
   puts("*******************************************************************");
   puts("1. Performance test with read/write");
   getTS_usec(); /* initialize time stamp */

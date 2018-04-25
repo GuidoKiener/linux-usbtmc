@@ -33,6 +33,11 @@
 #include <linux/compiler.h>
 #include "tmc.h"
 
+/* Increment API VERSION when changing tmc.h with new flags or ioctls
+ * or when changing a significant behavior of the driver.
+ */
+#define USBTMC_API_VERSION (1)
+
 #define USBTMC_VERSION "1.2"
 
 #define USBTMC_HEADER_SIZE	12
@@ -2212,6 +2217,13 @@ static long usbtmc_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 						   (void __user *)arg);
 		break;
 
+	case USBTMC_IOCTL_API_VERSION:
+		if (put_user(USBTMC_API_VERSION, (unsigned int __user *)arg))
+			retval = EFAULT;
+		else
+			retval = 0;
+		break;
+
 	case USBTMC488_IOCTL_GET_CAPS:
 		retval = copy_to_user((void __user *)arg,
 				&data->usb488_caps,
@@ -2601,7 +2613,7 @@ static void usbtmc_disconnect(struct usb_interface *intf)
 		usb_scuttle_anchored_urbs(&file_data->in_anchor);
 	}
 	mutex_unlock(&data->io_mutex);
-	usbtmc_free_int(data); // TODO: call this within locked mutex?
+	usbtmc_free_int(data);
 	kref_put(&data->kref, usbtmc_delete);
 }
 
