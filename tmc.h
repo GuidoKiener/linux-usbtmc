@@ -40,9 +40,17 @@
 #define USBTMC488_REQUEST_GOTO_LOCAL			161
 #define USBTMC488_REQUEST_LOCAL_LOCKOUT			162
 
+struct usbtmc_request {
+	__u8 bRequestType;
+	__u8 bRequest;
+	__u16 wValue;
+	__u16 wIndex;
+	__u16 wLength;
+} __attribute__ ((packed));
+
 struct usbtmc_ctrlrequest {
-	struct usb_ctrlrequest req;
-	void *data;
+	struct usbtmc_request req;
+	void __user *data;
 } __attribute__ ((packed));
 
 struct usbtmc_termchar {
@@ -58,7 +66,7 @@ struct usbtmc_termchar {
 #define USBTMC_FLAG_IGNORE_TRAILER	0x0004
 
 struct usbtmc_message {
-	void *message; /* pointer to header and data */
+	void __user *message; /* pointer to header and data */
 	__u64 transfer_size; /* size of bytes to transfer */
 	__u64 transferred; /* size of received/written bytes */
 	__u32 flags; /* bit 0: 0 = synchronous; 1 = asynchronous */
