@@ -545,6 +545,8 @@ static int usbtmc488_ioctl_read_stb(struct usbtmc_file_data *file_data,
 
 	if (put_user(stb, (__u8 __user *)arg))
 		rv = -EFAULT;
+	else
+		rv = 0;
 	dev_dbg(dev, "stb:0x%02x received %d\n", (unsigned int)stb, rv);
 
  exit:
