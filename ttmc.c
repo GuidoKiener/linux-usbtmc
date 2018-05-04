@@ -21,9 +21,6 @@
 #include <signal.h>
 #include <string.h>
 //#include <linux/usb/tmc.h>
-#ifndef __user
-#define __user
-#endif
 #include "tmc.h"
 
 #define NUM_CAPS 9

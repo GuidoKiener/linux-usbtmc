@@ -16,6 +16,10 @@
 #ifndef __LINUX_USB_TMC_H
 #define __LINUX_USB_TMC_H
 
+#if !defined(__KERNEL__)
+#define __user
+#endif
+
 #include <linux/usb/ch9.h>
 
 /* USB TMC status values */

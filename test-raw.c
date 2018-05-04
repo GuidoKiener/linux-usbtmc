@@ -26,9 +26,6 @@
 #include <assert.h>
 #include <endian.h>
 //#include <linux/usb/tmc.h>
-#ifndef __user
-#define __user
-#endif
 #include "tmc.h"
 
 
