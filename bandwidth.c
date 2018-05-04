@@ -11,6 +11,9 @@
 #include <errno.h>
 #include <assert.h>
 //#include <endian.h>
+#ifndef __user
+#define __user
+#endif
 #include "tmc.h"
 
 
