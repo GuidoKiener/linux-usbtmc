@@ -37,7 +37,7 @@
 /* Increment API VERSION when changing tmc.h with new flags or ioctls
  * or when changing a significant behavior of the driver.
  */
-#define USBTMC_API_VERSION (1)
+#define USBTMC_API_VERSION (2)
 
 #define USBTMC_HEADER_SIZE	12
 #define USBTMC_MINOR_BASE	176
@@ -145,6 +145,7 @@ struct usbtmc_file_data {
 	u8             srq_byte;
 	atomic_t       srq_asserted;
 	bool           closing;
+	u8             bmTransferAttributes; /* member of DEV_DEP_MSG_IN */
 
 	/* These values are initialized with default values from device_data */
 	u8             TermChar;
@@ -528,7 +529,7 @@ static int usbtmc488_ioctl_read_stb(struct usbtmc_file_data *file_data,
 
 		if (rv == 0) {
 			dev_dbg(dev, "wait timed out\n");
-			rv = -ETIME;
+			rv = -ETIMEDOUT;
 			goto exit;
 		}
 
@@ -1390,7 +1391,7 @@ static ssize_t usbtmc_read(struct file *filp, char __user *buf,
 	retval = send_request_dev_dep_msg_in(file_data, count);
 
 	if (retval < 0) {
-		if (data->auto_abort)
+		if (file_data->auto_abort)
 			usbtmc_ioctl_abort_bulk_out(data);
 		goto exit;
 	}
@@ -1412,7 +1413,7 @@ static ssize_t usbtmc_read(struct file *filp, char __user *buf,
 	data->bTag_last_read = data->bTag;
 
 	if (retval < 0) {
-		if (data->auto_abort)
+		if (file_data->auto_abort)
 			usbtmc_ioctl_abort_bulk_in(data);
 		goto exit;
 	}
@@ -1421,7 +1422,7 @@ static ssize_t usbtmc_read(struct file *filp, char __user *buf,
 	if (actual < USBTMC_HEADER_SIZE) {
 		dev_err(dev, "Device sent too small first packet: %u < %u\n",
 			actual, USBTMC_HEADER_SIZE);
-		if (data->auto_abort)
+		if (file_data->auto_abort)
 			usbtmc_ioctl_abort_bulk_in(data);
 		goto exit;
 	}
@@ -1429,7 +1430,7 @@ static ssize_t usbtmc_read(struct file *filp, char __user *buf,
 	if (buffer[0] != 2) {
 		dev_err(dev, "Device sent reply with wrong MsgID: %u != 2\n",
 			buffer[0]);
-		if (data->auto_abort)
+		if (file_data->auto_abort)
 			usbtmc_ioctl_abort_bulk_in(data);
 		goto exit;
 	}
@@ -1437,7 +1438,7 @@ static ssize_t usbtmc_read(struct file *filp, char __user *buf,
 	if (buffer[1] != data->bTag_last_write) {
 		dev_err(dev, "Device sent reply with wrong bTag: %u != %u\n",
 		buffer[1], data->bTag_last_write);
-		if (data->auto_abort)
+		if (file_data->auto_abort)
 			usbtmc_ioctl_abort_bulk_in(data);
 		goto exit;
 	}
@@ -1448,13 +1449,15 @@ static ssize_t usbtmc_read(struct file *filp, char __user *buf,
 		       (buffer[6] << 16) +
 		       (buffer[7] << 24);
 
+	file_data->bmTransferAttributes = buffer[8];
+
 	dev_dbg(dev, "Bulk-IN header: N_characters(%u), bTransAttr(%u)\n",
 		n_characters, buffer[8]);
 
 	if (n_characters > remaining) {
 		dev_err(dev, "Device wants to returns more data than requested: %u > %zu\n",
 			n_characters, count);
-		if (data->auto_abort)
+		if (file_data->auto_abort)
 			usbtmc_ioctl_abort_bulk_in(data);
 		goto exit;
 	}
@@ -1630,7 +1633,7 @@ static ssize_t usbtmc_write(struct file *filp, const char __user *buf,
 
 		dev_err(&data->intf->dev,
 			"Unable to send data, error %d\n", (int)retval);
-		if (data->auto_abort)
+		if (file_data->auto_abort)
 			usbtmc_ioctl_abort_bulk_out(data);
 		goto exit;
 	}
@@ -2174,7 +2177,7 @@ static long usbtmc_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 	struct usbtmc_file_data *file_data;
 	struct usbtmc_device_data *data;
 	int retval = -EBADRQC;
-	__u8 bTag;
+	__u8 tmp_byte;
 
 	file_data = file->private_data;
 	data = file_data->data;
@@ -2207,11 +2210,11 @@ static long usbtmc_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		break;
 
 	case USBTMC_IOCTL_ABORT_BULK_OUT_TAG:
-		if (get_user(bTag, (__u8 __user *)arg)) {
+		if (get_user(tmp_byte, (__u8 __user *)arg)) {
 			retval = EFAULT;
 			break;
 		}
-		retval = usbtmc_ioctl_abort_bulk_out_tag(data, bTag);
+		retval = usbtmc_ioctl_abort_bulk_out_tag(data, tmp_byte);
 		break;
 
 	case USBTMC_IOCTL_ABORT_BULK_IN:
@@ -2219,11 +2222,11 @@ static long usbtmc_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		break;
 
 	case USBTMC_IOCTL_ABORT_BULK_IN_TAG:
-		if (get_user(bTag, (__u8 __user *)arg)) {
+		if (get_user(tmp_byte, (__u8 __user *)arg)) {
 			retval = EFAULT;
 			break;
 		}
-		retval = usbtmc_ioctl_abort_bulk_in_tag(data, bTag);
+		retval = usbtmc_ioctl_abort_bulk_in_tag(data, tmp_byte);
 		break;
 
 	case USBTMC_IOCTL_CTRL_REQUEST:
@@ -2306,6 +2309,23 @@ static long usbtmc_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 	case USBTMC488_IOCTL_WAIT_SRQ:
 		retval = usbtmc488_ioctl_wait_srq(file_data,
 						  (unsigned int __user *)arg);
+		break;
+
+	case USBTMC_IOCTL_MSG_IN_ATTR:
+		if (put_user(file_data->bmTransferAttributes,
+			     (__u8 __user *)arg))
+			retval = EFAULT;
+		else
+			retval = 0;
+		break;
+
+	case USBTMC_IOCTL_AUTO_ABORT:
+		if (get_user(tmp_byte, (unsigned char __user *)arg)) {
+			retval = EFAULT;
+			break;
+		}
+		file_data->auto_abort = !!tmp_byte;
+		retval = 0;
 		break;
 
 	case USBTMC_IOCTL_SET_OUT_HALT:

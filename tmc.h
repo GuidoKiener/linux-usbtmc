@@ -87,7 +87,7 @@ struct usbtmc_message {
 #define USBTMC_IOCTL_CTRL_REQUEST	_IOWR(USBTMC_IOC_NR, 8, struct usbtmc_ctrlrequest)
 #define USBTMC_IOCTL_GET_TIMEOUT	_IOR(USBTMC_IOC_NR, 9, unsigned int)
 #define USBTMC_IOCTL_SET_TIMEOUT	_IOW(USBTMC_IOC_NR, 10, unsigned int)
-#define USBTMC_IOCTL_EOM_ENABLE	        _IOW(USBTMC_IOC_NR, 11, unsigned char)
+#define USBTMC_IOCTL_EOM_ENABLE	        _IOW(USBTMC_IOC_NR, 11, __u8)
 #define USBTMC_IOCTL_CONFIG_TERMCHAR	_IOW(USBTMC_IOC_NR, 12, struct usbtmc_termchar)
 
 #define USBTMC_IOCTL_WRITE		_IOWR(USBTMC_IOC_NR, 13, struct usbtmc_message)
@@ -103,11 +103,14 @@ struct usbtmc_message {
 #define USBTMC488_IOCTL_TRIGGER		_IO(USBTMC_IOC_NR, 22)
 #define USBTMC488_IOCTL_WAIT_SRQ	_IOW(USBTMC_IOC_NR, 23, unsigned int)
 
+#define USBTMC_IOCTL_MSG_IN_ATTR	_IOR(USBTMC_IOC_NR, 24, __u8)
+#define USBTMC_IOCTL_AUTO_ABORT		_IOW(USBTMC_IOC_NR, 25, __u8)
+
 /* For test purpose only */
 #define USBTMC_IOCTL_SET_OUT_HALT	_IO(USBTMC_IOC_NR, 30)
 #define USBTMC_IOCTL_SET_IN_HALT	_IO(USBTMC_IOC_NR, 31)
-#define USBTMC_IOCTL_ABORT_BULK_OUT_TAG	_IOW(USBTMC_IOC_NR,32, __u8)
-#define USBTMC_IOCTL_ABORT_BULK_IN_TAG	_IOW(USBTMC_IOC_NR,33, __u8)
+#define USBTMC_IOCTL_ABORT_BULK_OUT_TAG	_IOW(USBTMC_IOC_NR, 32, __u8)
+#define USBTMC_IOCTL_ABORT_BULK_IN_TAG	_IOW(USBTMC_IOC_NR, 33, __u8)
 
 /* Cancel and cleanup asynchronous calls */
 #define USBTMC_IOCTL_CANCEL_IO		_IO(USBTMC_IOC_NR, 35)
