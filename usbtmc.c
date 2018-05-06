@@ -420,6 +420,8 @@ static int usbtmc_ioctl_abort_bulk_out_tag(struct usbtmc_device_data *data,
 	n = 0;
 
 usbtmc_abort_bulk_out_check_status:
+	/* do not stress device with subsequent requests */
+	msleep(50);
 	rv = usb_control_msg(data->usb_dev,
 			     usb_rcvctrlpipe(data->usb_dev, 0),
 			     USBTMC_REQUEST_CHECK_ABORT_BULK_OUT_STATUS,
@@ -947,7 +949,7 @@ static ssize_t usbtmc_generic_read(struct usbtmc_file_data *file_data,
 				usbtmc_do_transfer(file_data),
 				expire);
 
-			dev_dbg(dev, "%s: wait returns %d\n",
+			dev_dbg(dev, "%s: wait returned %d\n",
 				__func__, retval);
 
 			if (retval <= 0) {
@@ -1455,7 +1457,7 @@ static ssize_t usbtmc_read(struct file *filp, char __user *buf,
 		n_characters, buffer[8]);
 
 	if (n_characters > remaining) {
-		dev_err(dev, "Device wants to returns more data than requested: %u > %zu\n",
+		dev_err(dev, "Device wants to return more data than requested: %u > %zu\n",
 			n_characters, count);
 		if (file_data->auto_abort)
 			usbtmc_ioctl_abort_bulk_in(data);
@@ -1729,11 +1731,12 @@ usbtmc_clear_check_status:
 		} while ((actual == USBTMC_BUFSIZE) &&
 			  (n < USBTMC_MAX_READS_TO_CLEAR_BULK_IN));
 	} else {
-		/* do not stress device with repeated interrupts */
+		/* do not stress device with subsequent requests */
 		msleep(50);
+		n++;
 	}
 
-	if (actual == USBTMC_BUFSIZE) {
+	if (n >= USBTMC_MAX_READS_TO_CLEAR_BULK_IN) {
 		dev_err(dev, "Couldn't clear device buffer within %d cycles\n",
 			USBTMC_MAX_READS_TO_CLEAR_BULK_IN);
 		rv = -EPERM;
@@ -1746,7 +1749,6 @@ usbtmc_clear_bulk_out_halt:
 
 	rv = usb_clear_halt(data->usb_dev,
 			    usb_sndbulkpipe(data->usb_dev, data->bulk_out));
-
 	if (rv < 0) {
 		dev_err(dev, "usb_clear_halt returned %d\n", rv);
 		goto exit;
@@ -1788,7 +1790,7 @@ static int usbtmc_ioctl_set_out_halt(struct usbtmc_device_data *data)
 			     usb_sndbulkpipe(data->usb_dev, data->bulk_out));
 
 	if (rv < 0)
-		dev_err(&data->usb_dev->dev, "%s returns %d\n", __func__, rv);
+		dev_err(&data->usb_dev->dev, "%s returned %d\n", __func__, rv);
 	return rv;
 }
 
@@ -1802,7 +1804,7 @@ static int usbtmc_ioctl_set_in_halt(struct usbtmc_device_data *data)
 			     usb_rcvbulkpipe(data->usb_dev, data->bulk_in));
 
 	if (rv < 0)
-		dev_err(&data->usb_dev->dev, "%s returns %d\n", __func__, rv);
+		dev_err(&data->usb_dev->dev, "%s returned %d\n", __func__, rv);
 	return rv;
 }
 
@@ -1816,7 +1818,7 @@ static int usbtmc_ioctl_clear_out_halt(struct usbtmc_device_data *data)
 			    usb_sndbulkpipe(data->usb_dev, data->bulk_out));
 
 	if (rv < 0)
-		dev_err(&data->usb_dev->dev, "%s returns %d\n", __func__, rv);
+		dev_err(&data->usb_dev->dev, "%s returned %d\n", __func__, rv);
 	return rv;
 }
 
@@ -1830,7 +1832,7 @@ static int usbtmc_ioctl_clear_in_halt(struct usbtmc_device_data *data)
 			    usb_rcvbulkpipe(data->usb_dev, data->bulk_in));
 
 	if (rv < 0)
-		dev_err(&data->usb_dev->dev, "%s returns %d\n", __func__, rv);
+		dev_err(&data->usb_dev->dev, "%s returned %d\n", __func__, rv);
 	return rv;
 }
 
@@ -2471,6 +2473,7 @@ static void usbtmc_interrupt(struct urb *urb)
 	case -EOVERFLOW:
 		dev_err(dev, "overflow with length %d, actual length is %d\n",
 			data->iin_wMaxPacketSize, urb->actual_length);
+		/* fall through */
 	case -ECONNRESET:
 	case -ENOENT:
 	case -ESHUTDOWN:
