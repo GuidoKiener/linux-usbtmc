@@ -10,12 +10,12 @@ the standard usbtmc driver in their kernel.
 
 The following functions have not yet been incorporated into
 a kernel.org release:
- - module params
  - user get/set ioctls for usb timeout
  - ioctl to send generic usb control messages
  - ioctl to control setting of EOM bit in writes
  - ioctl to configure TermChar and TermCharEnable
  - ioctls to send generic or vendor specific IN/OUT messages
+ - ioctls to test special situations
  
 The remaining features are available in the standard kernel.org releases >= 4.6.
 
@@ -45,7 +45,7 @@ Agilent/Keysight scope is also provided. See the file ttmc.c
 To build the provided program run `make ttmc`
 
 **New for IVI:** To test new ioctl functions proposed by IVI Foundation
-please create the program `make test-raw`
+please create the program `make test-raw` and `make bandwidth`
 
 To clean the directory of build files run `make clean`
 
@@ -184,28 +184,6 @@ from its file descriptor without having to access sysfs from the user
 program. The driver encoded usb488 capability masks are defined in the
 tmc.h include file.
 
-### Two new module parameters
-
-***io_buffer_size*** specifies the size of the buffer in bytes that is
-used for usb bulk transfers. The default size is 2048. The minimum
-size is 512. Values given for this parameter are automatically rounded
-down to the nearest multiple of 4.
-
-***usb_timeout*** specifies the timeout in milliseconds that is used
-for usb transfers. The default value is 5000 and the minimum value is 500.
-
-To set the parameters
-```
-insmod usbtmc.ko [io_buffer_size=nnn] [usb_timeout=nnn]
-````
-For example to set the buffer size to 256KB:
-```
-insmod usbtmc.ko io_buffer_size=262144
-```
-**Proposal of IVI:** 
- - using data_attribute(Timeout) instead of module parameter usb_timout.
- - Is there a need to change the io_buffer_size? 4kB is a good value, too.
- 
 ### ioctl's to set/get the usb timeout value
 
 Separate ioctl's to set and get the usb timeout value for a device.
@@ -272,6 +250,15 @@ Example
 The working group "VISA for Linux" (IVI Foundation, www.ivifoundation.org) 
 wants to extend the Linux USBTMC driver (linux/drivers/usb/class/usbtmc.c) 
 with the following new ioctl functions:
+
+### New for IVI: ioctl USBTMC_IOCTL_MSG_IN_ATTR
+The ioctl function returns the specific *bmTransferAttributes* value of the
+last DEV_DEP_MSG_IN Bulk-IN header. This header is received by the read()
+function. The meaning of the (u8) bitmap *bmTransferAttributes* is:
+Bit 0 = EOM flag is set when the last of a USBTMC message is received.
+Bit 1 = Is set when the last byte is a termchar (e.g. '\n'). Note that this
+bit is always zero when the device does not support termchar feature or when
+termchar detection is not enabled (see ioctl USBTMC_IOCTL_CONFIG_TERMCHAR).
 
 
 ### New for IVI: ioctl USBTMC_IOCTL_WRITE
@@ -403,6 +390,8 @@ For testing: The ioctl tries to abort a BULK IN transfer with a given tag.
 ### New for IVI: ioctl USBTMC_IOCTL_ABORT_BULK_OUT_TAG
 For testing: The ioctl tries to abort a BULK OUT transfer with a given tag.
 
+### New for IVI: ioctl USBTMC_IOCTL_AUTO_ABORT
+Enable/Disable the auto_abort feature. auto_abort is disabled by default.
 
 
 ## Issues and enhancement requests
