@@ -45,7 +45,7 @@ Agilent/Keysight scope is also provided. See the file ttmc.c
 To build the provided program run `make ttmc`
 
 To start your applications without sudo rights, insert a file e.g.
-/etc7udev/rules.d/99-usbtmc.rules with the content: 
+/etc/udev/rules.d/99-usbtmc.rules with the content: 
 
     KERNEL=="usbtmc[0..9]", SUBSYSTEM=="usbmisc", MODE="0666"
 
