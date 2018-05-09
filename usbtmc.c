@@ -222,9 +222,9 @@ static int usbtmc_open(struct inode *inode, struct file *filp)
 	file_data->eom_val = data->eom_val;
 
 	INIT_LIST_HEAD(&file_data->file_elem);
-	spin_lock(&data->dev_lock);
+	spin_lock_irq(&data->dev_lock);
 	list_add_tail(&file_data->file_elem, &data->file_list);
-	spin_unlock(&data->dev_lock);
+	spin_unlock_irq(&data->dev_lock);
 	mutex_unlock(&data->io_mutex);
 
 	/* Store pointer in file structure's private data field */
@@ -241,11 +241,11 @@ static int usbtmc_release(struct inode *inode, struct file *file)
 
 	/* prevent IO _AND_ usbtmc_interrupt */
 	mutex_lock(&file_data->data->io_mutex);
-	spin_lock(&file_data->data->dev_lock);
+	spin_lock_irq(&file_data->data->dev_lock);
 
 	list_del(&file_data->file_elem);
 
-	spin_unlock(&file_data->data->dev_lock);
+	spin_unlock_irq(&file_data->data->dev_lock);
 	mutex_unlock(&file_data->data->io_mutex);
 
 	kref_put(&file_data->data->kref, usbtmc_delete);
@@ -480,12 +480,12 @@ static int usbtmc488_ioctl_read_stb(struct usbtmc_file_data *file_data,
 	dev_dbg(dev, "Enter ioctl_read_stb iin_ep_present: %d\n",
 		data->iin_ep_present);
 
-	spin_lock_irq(&file_data->err_lock);
+	spin_lock_irq(&data->dev_lock);
 	srq_asserted = atomic_xchg(&file_data->srq_asserted, srq_asserted);
 	if (srq_asserted) {
 		/* a STB with SRQ is already received */
 		stb = file_data->srq_byte;
-		spin_unlock_irq(&file_data->err_lock);
+		spin_unlock_irq(&data->dev_lock);
 		rv = put_user(stb, (__u8 __user *)arg);
 		dev_dbg(dev, "stb:0x%02x with srq received %d\n",
 			(unsigned int)stb, rv);
@@ -493,7 +493,7 @@ static int usbtmc488_ioctl_read_stb(struct usbtmc_file_data *file_data,
 			return -EFAULT;
 		return rv;
 	}
-	spin_unlock_irq(&file_data->err_lock);
+	spin_unlock_irq(&data->dev_lock);
 
 	buffer = kmalloc(8, GFP_KERNEL);
 	if (!buffer)
@@ -2449,7 +2449,7 @@ static void usbtmc_interrupt(struct urb *urb)
 				kill_fasync(&data->fasync,
 					SIGIO, POLL_PRI);
 
-			spin_lock_irq(&data->dev_lock);
+			spin_lock(&data->dev_lock);
 			list_for_each(elem, &data->file_list) {
 				struct usbtmc_file_data *file_data;
 
@@ -2459,7 +2459,7 @@ static void usbtmc_interrupt(struct urb *urb)
 				file_data->srq_byte = data->iin_buffer[1];
 				atomic_set(&file_data->srq_asserted, 1);
 			}
-			spin_unlock_irq(&data->dev_lock);
+			spin_unlock(&data->dev_lock);
 
 			dev_dbg(dev, "srq received bTag %x stb %x\n",
 				(unsigned int)data->iin_buffer[0],
