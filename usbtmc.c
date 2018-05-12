@@ -144,7 +144,7 @@ struct usbtmc_file_data {
 	u32            timeout;
 	u8             srq_byte;
 	atomic_t       srq_asserted;
-	bool           closing;
+	atomic_t       closing;
 	u8             bmTransferAttributes; /* member of DEV_DEP_MSG_IN */
 
 	/* These values are initialized with default values from device_data */
@@ -178,7 +178,7 @@ static void usbtmc_delete(struct kref *kref)
 {
 	struct usbtmc_device_data *data = to_usbtmc_data(kref);
 
-	dev_info(&data->intf->dev, "%s\n", __func__);
+	pr_debug("%s - called\n", __func__);
 	usb_put_dev(data->usb_dev);
 
 	kfree(data);
@@ -200,6 +200,8 @@ static int usbtmc_open(struct inode *inode, struct file *filp)
 	if (!file_data)
 		return -ENOMEM;
 
+	pr_debug("%s - called\n", __func__);
+
 	spin_lock_init(&file_data->err_lock);
 	sema_init(&file_data->limit_write_sem, MAX_URBS_IN_FLIGHT);
 	init_usb_anchor(&file_data->submitted);
@@ -213,6 +215,8 @@ static int usbtmc_open(struct inode *inode, struct file *filp)
 
 	mutex_lock(&data->io_mutex);
 	file_data->data = data;
+
+	atomic_set(&file_data->closing, 0);
 
 	/* copy default values from device settings */
 	file_data->timeout = USBTMC_TIMEOUT;
@@ -237,7 +241,7 @@ static int usbtmc_release(struct inode *inode, struct file *file)
 {
 	struct usbtmc_file_data *file_data = file->private_data;
 
-	dev_dbg(&file_data->data->intf->dev, "%s - called\n", __func__);
+	pr_debug("%s - called\n", __func__);
 
 	/* prevent IO _AND_ usbtmc_interrupt */
 	mutex_lock(&file_data->data->io_mutex);
@@ -587,13 +591,13 @@ static int usbtmc488_ioctl_wait_srq(struct usbtmc_file_data *file_data,
 	rv = wait_event_interruptible_timeout(
 			data->waitq,
 			atomic_read(&file_data->srq_asserted) != 0 ||
-			file_data->closing,
+			atomic_read(&file_data->closing),
 			expire);
 
 	mutex_lock(&data->io_mutex);
 
 	/* Note! disconnect or close could be called in the meantime */
-	if (file_data->closing || data->zombie)
+	if (atomic_read(&file_data->closing) || data->zombie)
 		rv = -ENODEV;
 
 	if (rv < 0) {
@@ -740,13 +744,11 @@ static int usbtmc_flush(struct file *file, fl_owner_t id)
 	struct usbtmc_file_data *file_data;
 	struct usbtmc_device_data *data;
 
-	int res = 0;
-
 	file_data = file->private_data;
 	if (file_data == NULL)
 		return -ENODEV;
 
-	file_data->closing = 1;
+	atomic_set(&file_data->closing, 1);
 	data = file_data->data;
 
 	/* wait for io to stop */
@@ -763,10 +765,10 @@ static int usbtmc_flush(struct file *file, fl_owner_t id)
 	spin_unlock_irq(&file_data->err_lock);
 
 	wake_up_interruptible_all(&data->waitq);
-	dev_dbg(&data->intf->dev, "%s - called: %d\n", __func__, res);
+	pr_debug("%s - called\n", __func__);
 	mutex_unlock(&data->io_mutex);
 
-	return res;
+	return 0;
 }
 
 static void usbtmc_read_bulk_cb(struct urb *urb)
