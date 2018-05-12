@@ -845,7 +845,7 @@ static ssize_t usbtmc_generic_read(struct usbtmc_file_data *file_data,
 		 * packet
 		 */
 		remaining = transfer_size;
-		if ((max_transfer_size % data->wMaxPacketSize) == 0)
+		if (((u32)max_transfer_size % data->wMaxPacketSize) == 0)
 			max_transfer_size += (data->wMaxPacketSize - 1);
 	} else {
 		/* round down to bufsize to avoid truncated data left */
