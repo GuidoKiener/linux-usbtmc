@@ -493,8 +493,6 @@ static int usbtmc488_ioctl_read_stb(struct usbtmc_file_data *file_data,
 		rv = put_user(stb, (__u8 __user *)arg);
 		dev_dbg(dev, "stb:0x%02x with srq received %d\n",
 			(unsigned int)stb, rv);
-		if (rv)
-			return -EFAULT;
 		return rv;
 	}
 	spin_unlock_irq(&data->dev_lock);
@@ -550,10 +548,7 @@ static int usbtmc488_ioctl_read_stb(struct usbtmc_file_data *file_data,
 		stb = buffer[2];
 	}
 
-	if (put_user(stb, (__u8 __user *)arg))
-		rv = -EFAULT;
-	else
-		rv = 0;
+	rv = put_user(stb, (__u8 __user *)arg);
 	dev_dbg(dev, "stb:0x%02x received %d\n", (unsigned int)stb, rv);
 
  exit:
@@ -2107,10 +2102,7 @@ static int usbtmc_ioctl_get_timeout(struct usbtmc_file_data *file_data,
 
 	timeout = file_data->timeout;
 
-	if (put_user(timeout, (__u32 __user *)arg))
-		return -EFAULT;
-
-	return 0;
+	return put_user(timeout, (__u32 __user *)arg);
 }
 
 /*
@@ -2121,7 +2113,7 @@ static int usbtmc_ioctl_set_timeout(struct usbtmc_file_data *file_data,
 {
 	__u32 timeout;
 
-	if (copy_from_user(&timeout, arg, sizeof(timeout)))
+	if (get_user(timeout, (__u32 __user *)arg))
 		return -EFAULT;
 
 	/* Note that timeout = 0 means
@@ -2215,7 +2207,7 @@ static long usbtmc_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 
 	case USBTMC_IOCTL_ABORT_BULK_OUT_TAG:
 		if (get_user(tmp_byte, (__u8 __user *)arg)) {
-			retval = EFAULT;
+			retval = -EFAULT;
 			break;
 		}
 		retval = usbtmc_ioctl_abort_bulk_out_tag(data, tmp_byte);
@@ -2227,7 +2219,7 @@ static long usbtmc_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 
 	case USBTMC_IOCTL_ABORT_BULK_IN_TAG:
 		if (get_user(tmp_byte, (__u8 __user *)arg)) {
-			retval = EFAULT;
+			retval = -EFAULT;
 			break;
 		}
 		retval = usbtmc_ioctl_abort_bulk_in_tag(data, tmp_byte);
@@ -2273,17 +2265,13 @@ static long usbtmc_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		break;
 
 	case USBTMC_IOCTL_API_VERSION:
-		if (put_user(USBTMC_API_VERSION, (unsigned int __user *)arg))
-			retval = EFAULT;
-		else
-			retval = 0;
+		retval = put_user(USBTMC_API_VERSION,
+				  (unsigned int __user *)arg);
 		break;
 
 	case USBTMC488_IOCTL_GET_CAPS:
-		if (put_user(data->usb488_caps, (unsigned char __user *)arg))
-			retval = EFAULT;
-		else
-			retval = 0;
+		retval = put_user(data->usb488_caps,
+				  (unsigned char __user *)arg);
 		break;
 
 	case USBTMC488_IOCTL_READ_STB:
@@ -2303,7 +2291,7 @@ static long usbtmc_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 
 	case USBTMC488_IOCTL_LOCAL_LOCKOUT:
 		retval = usbtmc488_ioctl_simple(data, (void __user *)arg,
-						USBTMC488_REQUEST_LOCAL_LOCKOUT);
+					     USBTMC488_REQUEST_LOCAL_LOCKOUT);
 		break;
 
 	case USBTMC488_IOCTL_TRIGGER:
@@ -2316,20 +2304,14 @@ static long usbtmc_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		break;
 
 	case USBTMC_IOCTL_MSG_IN_ATTR:
-		if (put_user(file_data->bmTransferAttributes,
-			     (__u8 __user *)arg))
-			retval = EFAULT;
-		else
-			retval = 0;
+		retval = put_user(file_data->bmTransferAttributes,
+				  (__u8 __user *)arg);
 		break;
 
 	case USBTMC_IOCTL_AUTO_ABORT:
-		if (get_user(tmp_byte, (unsigned char __user *)arg)) {
-			retval = EFAULT;
-			break;
-		}
-		file_data->auto_abort = !!tmp_byte;
-		retval = 0;
+		retval = get_user(tmp_byte, (unsigned char __user *)arg);
+		if (retval == 0)
+			file_data->auto_abort = !!tmp_byte;
 		break;
 
 	case USBTMC_IOCTL_SET_OUT_HALT:
