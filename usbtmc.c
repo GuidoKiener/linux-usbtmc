@@ -1295,7 +1295,7 @@ static ssize_t usbtmc_ioctl_write_result(struct usbtmc_file_data *file_data,
 }
 
 /*
- * Sends a REQUEST_DEV_DEP_MSG_IN message on the Bulk-IN endpoint.
+ * Sends a REQUEST_DEV_DEP_MSG_IN message on the Bulk-OUT endpoint.
  * @transfer_size: number of bytes to request from the device.
  *
  * See the USBTMC specification, Table 4.
