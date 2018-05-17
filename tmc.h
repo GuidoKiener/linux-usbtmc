@@ -20,7 +20,7 @@
 #define __user
 #endif
 
-#include <linux/usb/ch9.h>
+#include <linux/types.h>   /* __u8 etc */
 
 /* USB TMC status values */
 #define USBTMC_STATUS_SUCCESS				0x01
@@ -89,7 +89,6 @@ struct usbtmc_message {
 #define USBTMC_IOCTL_SET_TIMEOUT	_IOW(USBTMC_IOC_NR, 10, unsigned int)
 #define USBTMC_IOCTL_EOM_ENABLE	        _IOW(USBTMC_IOC_NR, 11, __u8)
 #define USBTMC_IOCTL_CONFIG_TERMCHAR	_IOW(USBTMC_IOC_NR, 12, struct usbtmc_termchar)
-
 #define USBTMC_IOCTL_WRITE		_IOWR(USBTMC_IOC_NR, 13, struct usbtmc_message)
 #define USBTMC_IOCTL_READ		_IOWR(USBTMC_IOC_NR, 14, struct usbtmc_message)
 #define USBTMC_IOCTL_WRITE_RESULT	_IOWR(USBTMC_IOC_NR, 15, __u64)

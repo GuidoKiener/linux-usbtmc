@@ -42,8 +42,6 @@
 #define USBTMC_HEADER_SIZE	12
 #define USBTMC_MINOR_BASE	176
 
-#define VERBOSE 0
-
 /* Minimum USB timeout (in milliseconds) */
 #define USBTMC_MIN_TIMEOUT	100
 /* Default USB timeout (in milliseconds) */
@@ -121,7 +119,6 @@ struct usbtmc_device_data {
 	u8 TermChar;
 	bool TermCharEnabled;
 	bool auto_abort;
-	bool eom_val;
 
 	bool zombie; /* fd of disconnected device */
 
@@ -151,7 +148,7 @@ struct usbtmc_file_data {
 	u8             TermChar;
 	bool           TermCharEnabled;
 	bool           auto_abort;
-	bool           eom_val;
+	u8             eom_val;
 
 	spinlock_t     err_lock; /* lock for errors */
 
@@ -180,7 +177,6 @@ static void usbtmc_delete(struct kref *kref)
 
 	pr_debug("%s - called\n", __func__);
 	usb_put_dev(data->usb_dev);
-
 	kfree(data);
 }
 
@@ -209,7 +205,6 @@ static int usbtmc_open(struct inode *inode, struct file *filp)
 	init_waitqueue_head(&file_data->wait_bulk_in);
 
 	data = usb_get_intfdata(intf);
-
 	/* Protect reference to data from file structure until release */
 	kref_get(&data->kref);
 
@@ -223,7 +218,7 @@ static int usbtmc_open(struct inode *inode, struct file *filp)
 	file_data->TermChar = data->TermChar;
 	file_data->TermCharEnabled = data->TermCharEnabled;
 	file_data->auto_abort = data->auto_abort;
-	file_data->eom_val = data->eom_val;
+	file_data->eom_val = 1;
 
 	INIT_LIST_HEAD(&file_data->file_elem);
 	spin_lock_irq(&data->dev_lock);
@@ -233,6 +228,41 @@ static int usbtmc_open(struct inode *inode, struct file *filp)
 
 	/* Store pointer in file structure's private data field */
 	filp->private_data = file_data;
+
+	return 0;
+}
+
+/*
+ * usbtmc_flush - called before file handle is closed
+ */
+static int usbtmc_flush(struct file *file, fl_owner_t id)
+{
+	struct usbtmc_file_data *file_data;
+	struct usbtmc_device_data *data;
+
+	file_data = file->private_data;
+	if (file_data == NULL)
+		return -ENODEV;
+
+	atomic_set(&file_data->closing, 1);
+	data = file_data->data;
+
+	/* wait for io to stop */
+	mutex_lock(&data->io_mutex);
+
+	usbtmc_draw_down(file_data);
+
+	spin_lock_irq(&file_data->err_lock);
+	file_data->in_status = 0;
+	file_data->in_transfer_size = 0;
+	file_data->in_urbs_used = 0;
+	file_data->out_status = 0;
+	file_data->out_transfer_size = 0;
+	spin_unlock_irq(&file_data->err_lock);
+
+	wake_up_interruptible_all(&data->waitq);
+	pr_debug("%s - called\n", __func__);
+	mutex_unlock(&data->io_mutex);
 
 	return 0;
 }
@@ -322,10 +352,10 @@ usbtmc_abort_bulk_in_status:
 					  data->bulk_in),
 			  buffer, USBTMC_BUFSIZE,
 			  &actual, 300);
-#if VERBOSE
-	print_hex_dump(KERN_DEBUG, "usbtmc ", DUMP_PREFIX_NONE, 16, 1,
-		buffer, actual, true);
-#endif
+
+	print_hex_dump_debug("usbtmc ", DUMP_PREFIX_NONE, 16, 1,
+			     buffer, actual, true);
+
 	n++;
 
 	if (rv < 0) {
@@ -731,41 +761,6 @@ static struct urb *usbtmc_create_urb(void)
 	return urb;
 }
 
-/*
- * usbtmc_flush - called before file handle is closed
- */
-static int usbtmc_flush(struct file *file, fl_owner_t id)
-{
-	struct usbtmc_file_data *file_data;
-	struct usbtmc_device_data *data;
-
-	file_data = file->private_data;
-	if (file_data == NULL)
-		return -ENODEV;
-
-	atomic_set(&file_data->closing, 1);
-	data = file_data->data;
-
-	/* wait for io to stop */
-	mutex_lock(&data->io_mutex);
-
-	usbtmc_draw_down(file_data);
-
-	spin_lock_irq(&file_data->err_lock);
-	file_data->in_status = 0;
-	file_data->in_transfer_size = 0;
-	file_data->in_urbs_used = 0;
-	file_data->out_status = 0;
-	file_data->out_transfer_size = 0;
-	spin_unlock_irq(&file_data->err_lock);
-
-	wake_up_interruptible_all(&data->waitq);
-	pr_debug("%s - called\n", __func__);
-	mutex_unlock(&data->io_mutex);
-
-	return 0;
-}
-
 static void usbtmc_read_bulk_cb(struct urb *urb)
 {
 	struct usbtmc_file_data *file_data = urb->context;
@@ -982,10 +977,10 @@ static ssize_t usbtmc_generic_read(struct usbtmc_file_data *file_data,
 			this_part = urb->actual_length;
 		else
 			this_part = remaining;
-#if VERBOSE
-		print_hex_dump(KERN_DEBUG, "usbtmc ", DUMP_PREFIX_NONE, 16, 1,
+
+		print_hex_dump_debug("usbtmc ", DUMP_PREFIX_NONE, 16, 1,
 			urb->transfer_buffer, urb->actual_length, true);
-#endif
+
 		if (copy_to_user(user_buffer + done,
 				 urb->transfer_buffer, this_part)) {
 			usb_free_urb(urb);
@@ -1187,10 +1182,10 @@ static ssize_t usbtmc_generic_write(struct usbtmc_file_data *file_data,
 			up(&file_data->limit_write_sem);
 			goto error;
 		}
-#if VERBOSE
-		print_hex_dump(KERN_DEBUG, "usbtmc ", DUMP_PREFIX_NONE,
+
+		print_hex_dump_debug("usbtmc ", DUMP_PREFIX_NONE,
 			16, 1, buffer, this_part, true);
-#endif
+
 		/* fill bulk with 32 bit alignment to meet USBTMC specification
 		 * (size + 3 & ~3) rounds up and simplifies user code
 		 */
@@ -1461,10 +1456,10 @@ static ssize_t usbtmc_read(struct file *filp, char __user *buf,
 		goto exit;
 	}
 
-#if VERBOSE
-	print_hex_dump(KERN_DEBUG, "usbtmc ", DUMP_PREFIX_NONE,
-		16, 1, buffer, actual, true);
-#endif
+
+	print_hex_dump_debug("usbtmc ", DUMP_PREFIX_NONE,
+			     16, 1, buffer, actual, true);
+
 
 	remaining = n_characters;
 
@@ -1520,7 +1515,6 @@ static ssize_t usbtmc_write(struct file *filp, const char __user *buf,
 
 	mutex_lock(&data->io_mutex);
 
-	retval = 0;
 	if (data->zombie) {
 		retval = -ENODEV;
 		goto exit;
@@ -1575,7 +1569,7 @@ static ssize_t usbtmc_write(struct file *filp, const char __user *buf,
 	buffer[10] = 0; /* Reserved */
 	buffer[11] = 0; /* Reserved */
 
-	if ((u64)transfersize + (u64)USBTMC_HEADER_SIZE > (u64)buflen) {
+	if (transfersize + USBTMC_HEADER_SIZE > buflen) {
 		transfersize = buflen - USBTMC_HEADER_SIZE;
 		aligned = buflen;
 	} else {
@@ -1591,10 +1585,10 @@ static ssize_t usbtmc_write(struct file *filp, const char __user *buf,
 	dev_dbg(&data->intf->dev, "%s(size:%u align:%u)\n", __func__,
 		(unsigned int)transfersize, (unsigned int)aligned);
 
-#if VERBOSE
-	print_hex_dump(KERN_DEBUG, "usbtmc ", DUMP_PREFIX_NONE,
-		16, 1, buffer, aligned, true);
-#endif
+
+	print_hex_dump_debug("usbtmc ", DUMP_PREFIX_NONE,
+			     16, 1, buffer, aligned, true);
+
 
 
 	usb_fill_bulk_urb(urb, data->usb_dev,
@@ -1714,10 +1708,10 @@ usbtmc_clear_check_status:
 							  data->bulk_in),
 					  buffer, USBTMC_BUFSIZE,
 					  &actual, USB_CTRL_GET_TIMEOUT);
-#if VERBOSE
-			print_hex_dump(KERN_DEBUG, "usbtmc ", DUMP_PREFIX_NONE,
-					16, 1, buffer, actual, true);
-#endif
+
+			print_hex_dump_debug("usbtmc ", DUMP_PREFIX_NONE,
+					     16, 1, buffer, actual, true);
+
 			n++;
 
 			if (rv < 0) {
@@ -2519,18 +2513,10 @@ static int usbtmc_probe(struct usb_interface *intf,
 
 	data->zombie = 0;
 
-	/* already zero by kzalloc()
-	 * data->out_transfer_size = 0;
-	 * data->out_status = 0;
-	 * data->in_transfer_size = 0;
-	 * data->in_status = 0;
-	 */
-
 	/* Initialize USBTMC bTag and other fields */
 	data->bTag	= 1;
 	data->TermCharEnabled = 0;
 	data->TermChar = '\n';
-	data->eom_val  = 1;
 	/*  2 <= bTag <= 127   USBTMC-USB488 subclass specification 4.3.1 */
 	data->iin_bTag = 2;
 
