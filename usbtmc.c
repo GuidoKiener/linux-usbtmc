@@ -2092,7 +2092,7 @@ static int usbtmc_ioctl_request(struct usbtmc_device_data *data,
 static int usbtmc_ioctl_get_timeout(struct usbtmc_file_data *file_data,
 				void __user *arg)
 {
-	__u32 timeout;
+	u32 timeout;
 
 	timeout = file_data->timeout;
 
@@ -2105,7 +2105,7 @@ static int usbtmc_ioctl_get_timeout(struct usbtmc_file_data *file_data,
 static int usbtmc_ioctl_set_timeout(struct usbtmc_file_data *file_data,
 				void __user *arg)
 {
-	__u32 timeout;
+	u32 timeout;
 
 	if (get_user(timeout, (__u32 __user *)arg))
 		return -EFAULT;
