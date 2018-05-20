@@ -2043,7 +2043,7 @@ static int usbtmc_ioctl_request(struct usbtmc_device_data *data,
 	if (res)
 		return -EFAULT;
 
-	buffer = kmalloc(min_t(u16, 256, request.req.wLength), GFP_KERNEL);
+	buffer = kmalloc(max_t(u16, 256, request.req.wLength), GFP_KERNEL);
 	if (!buffer)
 		return -ENOMEM;
 
