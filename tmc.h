@@ -70,9 +70,9 @@ struct usbtmc_termchar {
 #define USBTMC_FLAG_IGNORE_TRAILER	0x0004
 
 struct usbtmc_message {
-	void __user *message; /* pointer to header and data */
 	__u64 transfer_size; /* size of bytes to transfer */
 	__u64 transferred; /* size of received/written bytes */
+	void __user *message; /* pointer to header and data */
 	__u32 flags; /* bit 0: 0 = synchronous; 1 = asynchronous */
 } __attribute__ ((packed));
 
