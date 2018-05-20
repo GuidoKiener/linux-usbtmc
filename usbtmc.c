@@ -32,6 +32,7 @@
 #include <linux/mutex.h>
 #include <linux/usb.h>
 #include <linux/compiler.h>
+#include <linux/compat.h>
 #include "tmc.h"
 
 /* Increment API VERSION when changing tmc.h with new flags or ioctls
@@ -166,6 +167,20 @@ struct usbtmc_file_data {
 	struct usb_anchor in_anchor;
 	wait_queue_head_t wait_bulk_in;
 };
+
+#ifdef CONFIG_COMPAT
+
+struct compat_usbtmc_message {
+	u64 transfer_size;
+	u64 transferred;
+	compat_uptr_t message;
+	u32 flags;
+} __packed;
+
+#define USBTMC_IOCTL_WRITE32		_IOWR(USBTMC_IOC_NR, 13, struct compat_usbtmc_message)
+#define USBTMC_IOCTL_READ32		_IOWR(USBTMC_IOC_NR, 14, struct compat_usbtmc_message)
+
+#endif
 
 /* Forward declarations */
 static struct usb_driver usbtmc_driver;
@@ -1061,6 +1076,30 @@ static ssize_t usbtmc_ioctl_generic_read(struct usbtmc_file_data *file_data,
 	return retval;
 }
 
+#ifdef CONFIG_COMPAT
+static ssize_t usbtmc_ioctl_generic_read32(struct usbtmc_file_data *file_data,
+					   void __user *arg)
+{
+	struct compat_usbtmc_message msg;
+	ssize_t retval = 0;
+
+	/* mutex already locked */
+
+	if (copy_from_user(&msg, arg, sizeof(struct compat_usbtmc_message)))
+		return -EFAULT;
+
+	retval = usbtmc_generic_read(file_data, compat_ptr(msg.message),
+				      msg.transfer_size, &msg.transferred,
+				      msg.flags);
+
+	if (put_user(msg.transferred,
+		   &((struct compat_usbtmc_message __user *)arg)->transferred))
+		return -EFAULT;
+
+	return retval;
+}
+#endif
+
 static void usbtmc_write_bulk_cb(struct urb *urb)
 {
 	struct usbtmc_file_data *file_data = urb->context;
@@ -1268,6 +1307,30 @@ static ssize_t usbtmc_ioctl_generic_write(struct usbtmc_file_data *file_data,
 
 	return retval;
 }
+
+#ifdef CONFIG_COMPAT
+static ssize_t usbtmc_ioctl_generic_write32(struct usbtmc_file_data *file_data,
+					    void __user *arg)
+{
+	struct compat_usbtmc_message msg;
+	ssize_t retval = 0;
+
+	/* mutex already locked */
+
+	if (copy_from_user(&msg, arg, sizeof(struct compat_usbtmc_message)))
+		return -EFAULT;
+
+	retval = usbtmc_generic_write(file_data, compat_ptr(msg.message),
+				      msg.transfer_size, &msg.transferred,
+				      msg.flags);
+
+	if (put_user(msg.transferred,
+		   &((struct compat_usbtmc_message __user *)arg)->transferred))
+		return -EFAULT;
+
+	return retval;
+}
+#endif
 
 /*
  * Get the generic write result
@@ -2248,10 +2311,24 @@ static long usbtmc_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 						    (void __user *)arg);
 		break;
 
+#ifdef CONFIG_COMPAT
+	case USBTMC_IOCTL_WRITE32:
+		retval = usbtmc_ioctl_generic_write32(file_data,
+						      (void __user *)arg);
+		break;
+#endif
+
 	case USBTMC_IOCTL_READ:
 		retval = usbtmc_ioctl_generic_read(file_data,
 						   (void __user *)arg);
 		break;
+
+#ifdef CONFIG_COMPAT
+	case USBTMC_IOCTL_READ32:
+		retval = usbtmc_ioctl_generic_read32(file_data,
+						     (void __user *)arg);
+		break;
+#endif
 
 	case USBTMC_IOCTL_WRITE_RESULT:
 		retval = usbtmc_ioctl_write_result(file_data,
@@ -2388,6 +2465,9 @@ static const struct file_operations fops = {
 	.release	= usbtmc_release,
 	.flush		= usbtmc_flush,
 	.unlocked_ioctl	= usbtmc_ioctl,
+#ifdef CONFIG_COMPAT
+	.compat_ioctl	= usbtmc_ioctl,
+#endif
 	.fasync         = usbtmc_fasync,
 	.poll           = usbtmc_poll,
 	.llseek		= default_llseek,
