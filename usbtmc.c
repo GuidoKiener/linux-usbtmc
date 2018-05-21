@@ -170,6 +170,11 @@ struct usbtmc_file_data {
 
 #ifdef CONFIG_COMPAT
 
+struct compat_usbtmc_ctrlrequest {
+	struct usbtmc_request req;
+	compat_uptr_t data;
+} __packed;
+
 struct compat_usbtmc_message {
 	u64 transfer_size;
 	u64 transferred;
@@ -177,6 +182,7 @@ struct compat_usbtmc_message {
 	u32 flags;
 } __packed;
 
+#define USBTMC_IOCTL_CTRL_REQUEST32	_IOWR(USBTMC_IOC_NR, 8, struct compat_usbtmc_ctrlrequest)
 #define USBTMC_IOCTL_WRITE32		_IOWR(USBTMC_IOC_NR, 13, struct compat_usbtmc_message)
 #define USBTMC_IOCTL_READ32		_IOWR(USBTMC_IOC_NR, 14, struct compat_usbtmc_message)
 
@@ -2093,6 +2099,67 @@ exit:
 	return rv;
 }
 
+#ifdef CONFIG_COMPAT
+static int usbtmc_ioctl_request32(struct usbtmc_device_data *data,
+				  void __user *arg)
+{
+	struct device *dev = &data->intf->dev;
+	struct compat_usbtmc_ctrlrequest request;
+	u8 *buffer = NULL;
+	int rv;
+	unsigned long res;
+
+	res = copy_from_user(&request, arg,
+			     sizeof(struct compat_usbtmc_ctrlrequest));
+	if (res)
+		return -EFAULT;
+
+	buffer = kmalloc(max_t(u16, 256, request.req.wLength), GFP_KERNEL);
+	if (!buffer)
+		return -ENOMEM;
+
+	if ((request.req.bRequestType & USB_DIR_IN) == 0
+	    && request.req.wLength) {
+		/* Send control data to device */
+		res = copy_from_user(buffer, compat_ptr(request.data),
+				     request.req.wLength);
+		if (res) {
+			rv = -EFAULT;
+			goto exit;
+		}
+	}
+
+	rv = usb_control_msg(data->usb_dev,
+			usb_rcvctrlpipe(data->usb_dev, 0),
+			request.req.bRequest,
+			request.req.bRequestType,
+			request.req.wValue,
+			request.req.wIndex,
+			buffer, request.req.wLength, USB_CTRL_GET_TIMEOUT);
+
+	if (rv < 0) {
+		dev_err(dev, "%s failed %d\n", __func__, rv);
+		goto exit;
+	}
+	if ((request.req.bRequestType & USB_DIR_IN)) {
+		/* Read control data from device */
+		if (rv > request.req.wLength) {
+			dev_warn(dev, "%s returned too much data: %d\n",
+				 __func__, rv);
+			rv = request.req.wLength;
+		}
+
+		res = copy_to_user(compat_ptr(request.data), buffer, rv);
+		if (res)
+			rv = -EFAULT;
+	}
+
+ exit:
+	kfree(buffer);
+	return rv;
+}
+#endif
+
 static int usbtmc_ioctl_request(struct usbtmc_device_data *data,
 				void __user *arg)
 {
@@ -2285,6 +2352,12 @@ static long usbtmc_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 	case USBTMC_IOCTL_CTRL_REQUEST:
 		retval = usbtmc_ioctl_request(data, (void __user *)arg);
 		break;
+
+#ifdef CONFIG_COMPAT
+	case USBTMC_IOCTL_CTRL_REQUEST32:
+		retval = usbtmc_ioctl_request32(data, (void __user *)arg);
+		break;
+#endif
 
 	case USBTMC_IOCTL_GET_TIMEOUT:
 		retval = usbtmc_ioctl_get_timeout(file_data,
