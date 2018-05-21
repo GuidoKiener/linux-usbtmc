@@ -25,6 +25,7 @@
 #include <errno.h>
 #include <assert.h>
 #include <endian.h>
+#include <linux/usb/ch9.h>
 //#include <linux/usb/tmc.h>
 #include "tmc.h"
 
@@ -659,6 +660,7 @@ int main () {
   //fd_set fdsel[3];
   double time, time2;
   int i;
+  struct usbtmc_ctrlrequest req;
 
   /* Open file */
   if (0 > (fd = open("/dev/usbtmc0",O_RDWR))) {
@@ -814,7 +816,7 @@ int main () {
   tmc_raw_read(sBigReceive, bigsize + MAX_BL, &received);
   time2 = getTS_usec();
   if ( memcmp(&sBigSend[n], &sBigReceive[2+digits], bigsize) != 0) {
-  	perror("data mismatch");
+	perror("data mismatch");
 	exit(1);
   }
   printf("Raw I/O: send rate=%.3f MB/s, read rate %.3f MB/s\n",
@@ -822,9 +824,40 @@ int main () {
   any_system_error();
 
   puts("*******************************************************************");
-  puts("5c. Send and receive big data and verify content with async raw read/write");
+  puts("5c. Simulate with copy: Send and receive big data with raw read/write");
+  /* prepare big send data */
+  digits = sprintf( buf, "%u", bigsize );
+  n = sprintf( sBigSend,":MMEM:DATA 'test.txt',#%u%s", digits, buf );
+  for (i = 0; i < bigsize; i++)
+	sBigSend[n+i] = (char)i+10;
+
+  getTS_usec(); /* initialize time stamp */
+  {
+	char *_localbuf = malloc(bigsize + MAX_BL); /* freed when program exits */
+	memcpy(_localbuf, sBigSend, n+bigsize);
+        tmc_raw_write(_localbuf, n+bigsize, &sent);
+	free(_localbuf);
+  }
+  time = getTS_usec();
+  assert(sent == (n+bigsize));
+  any_system_error(); /* wait until file is written */
+
+  tmc_raw_send("mmem:data? 'test.txt'");
+  getTS_usec(); /* initialize time stamp */
+  tmc_raw_read(sBigReceive, bigsize + MAX_BL, &received);
+  time2 = getTS_usec();
+  if ( memcmp(&sBigSend[n], &sBigReceive[2+digits], bigsize) != 0) {
+	perror("data mismatch");
+	exit(1);
+  }
+  printf("Raw I/O: send rate=%.3f MB/s, read rate %.3f MB/s\n",
+	bigsize * (1.0e6/(1024*1024)) / time, bigsize * (1.0e6/(1024*1024)) / time2);
+  any_system_error();
+
+  puts("*******************************************************************");
+  puts("5d. Send and receive big data and verify content with async raw read/write");
   /***********************************************************
-   * 5c. asynchronous raw read/write
+   * 5d. asynchronous raw read/write
    *     Note that async write does not send more then 16 * 4k
    ***********************************************************/
   /* test asynchronous write and reduce bigsize for simple testing */
@@ -1046,6 +1079,28 @@ int main () {
 
   any_system_error();
 
+  puts("*******************************************************************");
+  puts("8.  Test USBTMC_IOCTL_CTRL_REQUEST");
+
+  /* Read manufacturer string */
+  req.req.bRequestType = USB_DIR_IN | USB_TYPE_STANDARD | USB_RECIP_DEVICE;
+  req.req.bRequest = USB_REQ_GET_DESCRIPTOR;
+  req.req.wValue = USB_DT_STRING << 8 | 0x01; // Index of string
+  req.req.wIndex = 0;
+  req.req.wLength = MAX_BL;
+  req.data = buf;
+  
+  memset(buf,0, MAX_BL);
+  rv = ioctl(fd, USBTMC_IOCTL_CTRL_REQUEST, &req);
+  if (rv < 0) {
+	printf("request failed: rv=%d errno=%d\n", rv, errno);
+  } else {
+	/* Sorry. There is a better way to print wchar_t */
+	for (i=2; i < rv; i+=2)
+		printf("%c", buf[i]);
+	printf("\n");
+  }
+	
   printf("done\n");
   close(fd);
   exit(0);
