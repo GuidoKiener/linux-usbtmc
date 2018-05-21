@@ -3,7 +3,7 @@
  * Copyright (C) 2008 Novell, Inc.
  * Copyright (C) 2008 Greg Kroah-Hartman <gregkh@suse.de>
  * Copyright (C) 2015 Dave Penkler <dpenkler@gmail.com>
- * Copyright (C) 2018, IVI Foundation, Inc.
+ * Copyright (C) 2018 IVI Foundation, Inc.
  *
  * This file holds USB constants defined by the USB Device Class
  * and USB488 Subclass Definitions for Test and Measurement devices
