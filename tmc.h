@@ -70,10 +70,10 @@ struct usbtmc_termchar {
 #define USBTMC_FLAG_IGNORE_TRAILER	0x0004
 
 struct usbtmc_message {
-	__u64 transfer_size; /* size of bytes to transfer */
-	__u64 transferred; /* size of received/written bytes */
-	void __user *message; /* pointer to header and data */
+	__u32 transfer_size;  /* size of bytes to transfer */
+	__u32 transferred; /* size of received/written bytes */
 	__u32 flags; /* bit 0: 0 = synchronous; 1 = asynchronous */
+	void __user *message; /* pointer to header and data */
 } __attribute__ ((packed));
 
 /* Request values for USBTMC driver's ioctl entry point */
@@ -91,7 +91,7 @@ struct usbtmc_message {
 #define USBTMC_IOCTL_CONFIG_TERMCHAR	_IOW(USBTMC_IOC_NR, 12, struct usbtmc_termchar)
 #define USBTMC_IOCTL_WRITE		_IOWR(USBTMC_IOC_NR, 13, struct usbtmc_message)
 #define USBTMC_IOCTL_READ		_IOWR(USBTMC_IOC_NR, 14, struct usbtmc_message)
-#define USBTMC_IOCTL_WRITE_RESULT	_IOWR(USBTMC_IOC_NR, 15, __u64)
+#define USBTMC_IOCTL_WRITE_RESULT	_IOWR(USBTMC_IOC_NR, 15, __u32)
 #define USBTMC_IOCTL_API_VERSION	_IOR(USBTMC_IOC_NR, 16, unsigned int)
 
 #define USBTMC488_IOCTL_GET_CAPS	_IOR(USBTMC_IOC_NR, 17, unsigned char)

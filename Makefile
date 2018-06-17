@@ -1,11 +1,12 @@
 ifneq ($(KERNELRELEASE),)
 # kbuild part of makefile
 obj-m  := usbtmc.o
+# ccflags-y += -g
 else
 # normal makefile
 KDIR ?= /lib/modules/`uname -r`/build
 default:
-	$(MAKE) -C $(KDIR) M=$$PWD 
+	$(MAKE) -C $(KDIR) M=$$PWD
 
 install:
 	$(MAKE) -C $(KDIR) M=$$PWD modules_install

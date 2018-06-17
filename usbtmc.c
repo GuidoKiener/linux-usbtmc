@@ -35,6 +35,8 @@
 #include <linux/compat.h>
 #include "tmc.h"
 
+#define VERBOSE 0
+
 /* Increment API VERSION when changing tmc.h with new flags or ioctls
  * or when changing a significant behavior of the driver.
  */
@@ -157,11 +159,11 @@ struct usbtmc_file_data {
 
 	/* data for generic_write */
 	struct semaphore limit_write_sem;
-	u64 out_transfer_size;
+	u32 out_transfer_size;
 	int out_status;
 
 	/* data for generic_read */
-	u64 in_transfer_size;
+	u32 in_transfer_size;
 	int in_status;
 	int in_urbs_used;
 	struct usb_anchor in_anchor;
@@ -176,10 +178,10 @@ struct compat_usbtmc_ctrlrequest {
 } __packed;
 
 struct compat_usbtmc_message {
-	u64 transfer_size;
-	u64 transferred;
+	__u32 transfer_size;
+	__u32 transferred;
+	__u32 flags;
 	compat_uptr_t message;
-	u32 flags;
 } __packed;
 
 #define USBTMC_IOCTL_CTRL_REQUEST32	_IOWR(USBTMC_IOC_NR, 8, struct compat_usbtmc_ctrlrequest)
@@ -373,10 +375,10 @@ usbtmc_abort_bulk_in_status:
 					  data->bulk_in),
 			  buffer, USBTMC_BUFSIZE,
 			  &actual, 300);
-
+#if VERBOSE
 	print_hex_dump_debug("usbtmc ", DUMP_PREFIX_NONE, 16, 1,
 			     buffer, actual, true);
-
+#endif
 	n++;
 
 	if (rv < 0) {
@@ -806,7 +808,7 @@ static void usbtmc_read_bulk_cb(struct urb *urb)
 	spin_lock(&file_data->err_lock);
 	file_data->in_transfer_size += urb->actual_length;
 	dev_dbg(&file_data->data->intf->dev,
-		"%s - total size: %llu current: %d status: %d\n",
+		"%s - total size: %u current: %d status: %d\n",
 		__func__, file_data->in_transfer_size,
 		urb->actual_length, status);
 	spin_unlock(&file_data->err_lock);
@@ -831,17 +833,17 @@ static inline bool usbtmc_do_transfer(struct usbtmc_file_data *file_data)
 
 static ssize_t usbtmc_generic_read(struct usbtmc_file_data *file_data,
 				   void __user *user_buffer,
-				   u64 transfer_size,
-				   u64 *transferred,
+				   u32 transfer_size,
+				   u32 *transferred,
 				   u32 flags)
 {
 	struct usbtmc_device_data *data = file_data->data;
 	struct device *dev = &data->intf->dev;
-	u64 done = 0;
-	u64 remaining;
-	const size_t bufsize = USBTMC_BUFSIZE;
+	u32 done = 0;
+	u32 remaining;
+	const u32 bufsize = USBTMC_BUFSIZE;
 	int retval = 0;
-	u64 max_transfer_size;
+	u32 max_transfer_size;
 	unsigned long expire;
 	int bufcount = 1;
 	int again = 0;
@@ -858,7 +860,7 @@ static ssize_t usbtmc_generic_read(struct usbtmc_file_data *file_data,
 		 * packet
 		 */
 		remaining = transfer_size;
-		if (((u32)max_transfer_size % data->wMaxPacketSize) == 0)
+		if ((max_transfer_size % data->wMaxPacketSize) == 0)
 			max_transfer_size += (data->wMaxPacketSize - 1);
 	} else {
 		/* round down to bufsize to avoid truncated data left */
@@ -908,8 +910,8 @@ static ssize_t usbtmc_generic_read(struct usbtmc_file_data *file_data,
 	}
 	spin_unlock_irq(&file_data->err_lock);
 
-	dev_dbg(dev, "%s: requested=%llu flags=0x%X size=%llu bufs=%d used=%d\n",
-		__func__, (u64)transfer_size, (unsigned int)flags,
+	dev_dbg(dev, "%s: requested=%u flags=0x%X size=%u bufs=%d used=%d\n",
+		__func__, transfer_size, flags,
 		max_transfer_size, bufcount, file_data->in_urbs_used);
 
 	while (bufcount > 0) {
@@ -951,7 +953,7 @@ static ssize_t usbtmc_generic_read(struct usbtmc_file_data *file_data,
 	expire = msecs_to_jiffies(file_data->timeout);
 
 	while (max_transfer_size > 0) {
-		size_t this_part;
+		u32 this_part;
 		struct urb *urb = NULL;
 
 		if (!(flags & USBTMC_FLAG_ASYNC)) {
@@ -982,7 +984,7 @@ static ssize_t usbtmc_generic_read(struct usbtmc_file_data *file_data,
 
 			/* asynchronous case: ready, do not block or wait */
 			*transferred = done;
-			dev_dbg(dev, "%s: (async) done=%llu ret=0\n",
+			dev_dbg(dev, "%s: (async) done=%u ret=0\n",
 				__func__, done);
 			return 0;
 		}
@@ -998,10 +1000,10 @@ static ssize_t usbtmc_generic_read(struct usbtmc_file_data *file_data,
 			this_part = urb->actual_length;
 		else
 			this_part = remaining;
-
+#if VERBOSE
 		print_hex_dump_debug("usbtmc ", DUMP_PREFIX_NONE, 16, 1,
 			urb->transfer_buffer, urb->actual_length, true);
-
+#endif
 		if (copy_to_user(user_buffer + done,
 				 urb->transfer_buffer, this_part)) {
 			usb_free_urb(urb);
@@ -1055,7 +1057,7 @@ error:
 	usb_scuttle_anchored_urbs(&file_data->in_anchor);
 	file_data->in_urbs_used = 0;
 	file_data->in_status = 0; /* no spinlock needed here */
-	dev_dbg(dev, "%s: done=%llu ret=%d\n", __func__, done, retval);
+	dev_dbg(dev, "%s: done=%u ret=%d\n", __func__, done, retval);
 
 	return retval;
 }
@@ -1087,7 +1089,7 @@ static ssize_t usbtmc_ioctl_generic_read32(struct usbtmc_file_data *file_data,
 					   void __user *arg)
 {
 	struct compat_usbtmc_message msg;
-	ssize_t retval = 0;
+	compat_ssize_t retval = 0;
 
 	/* mutex already locked */
 
@@ -1131,7 +1133,7 @@ static void usbtmc_write_bulk_cb(struct urb *urb)
 	spin_unlock(&file_data->err_lock);
 
 	dev_dbg(&file_data->data->intf->dev,
-		"%s - write bulk total size: %llu\n",
+		"%s - write bulk total size: %u\n",
 		__func__, file_data->out_transfer_size);
 
 	up(&file_data->limit_write_sem);
@@ -1141,16 +1143,16 @@ static void usbtmc_write_bulk_cb(struct urb *urb)
 
 static ssize_t usbtmc_generic_write(struct usbtmc_file_data *file_data,
 				    const void __user *user_buffer,
-				    u64 transfer_size,
-				    u64 *transferred,
+				    u32 transfer_size,
+				    u32 *transferred,
 				    u32 flags)
 {
 	struct usbtmc_device_data *data = file_data->data;
 	struct device *dev;
-	u64 done = 0;
-	u64 remaining;
+	u32 done = 0;
+	u32 remaining;
 	unsigned long expire;
-	const size_t bufsize = USBTMC_BUFSIZE;
+	const u32 bufsize = USBTMC_BUFSIZE;
 	struct urb *urb = NULL;
 	int retval = 0;
 	u32 timeout;
@@ -1160,8 +1162,8 @@ static ssize_t usbtmc_generic_write(struct usbtmc_file_data *file_data,
 	/* Get pointer to private data structure */
 	dev = &data->intf->dev;
 
-	dev_dbg(dev, "%s: size=%llu flags=0x%X sema=%u\n",
-		__func__, transfer_size, (unsigned int)flags,
+	dev_dbg(dev, "%s: size=%u flags=0x%X sema=%u\n",
+		__func__, transfer_size, flags,
 		file_data->limit_write_sem.count);
 
 	if (flags & USBTMC_FLAG_APPEND) {
@@ -1178,12 +1180,14 @@ static ssize_t usbtmc_generic_write(struct usbtmc_file_data *file_data,
 	}
 
 	remaining = transfer_size;
+	if (remaining > INT_MAX)
+		remaining = INT_MAX;
 
 	timeout = file_data->timeout;
 	expire = msecs_to_jiffies(timeout);
 
 	while (remaining > 0) {
-		size_t this_part, aligned;
+		u32 this_part, aligned;
 		u8 *buffer = NULL;
 
 		if (flags & USBTMC_FLAG_ASYNC) {
@@ -1227,10 +1231,10 @@ static ssize_t usbtmc_generic_write(struct usbtmc_file_data *file_data,
 			up(&file_data->limit_write_sem);
 			goto error;
 		}
-
+#if VERBOSE
 		print_hex_dump_debug("usbtmc ", DUMP_PREFIX_NONE,
 			16, 1, buffer, this_part, true);
-
+#endif
 		/* fill bulk with 32 bit alignment to meet USBTMC specification
 		 * (size + 3 & ~3) rounds up and simplifies user code
 		 */
@@ -1286,7 +1290,7 @@ exit:
 
 	*transferred = done;
 
-	dev_dbg(dev, "%s: done=%llu, retval=%d, urbstat=%d\n",
+	dev_dbg(dev, "%s: done=%u, retval=%d, urbstat=%d\n",
 		__func__, done, retval, file_data->out_status);
 
 	return retval;
@@ -1344,15 +1348,15 @@ static ssize_t usbtmc_ioctl_generic_write32(struct usbtmc_file_data *file_data,
 static ssize_t usbtmc_ioctl_write_result(struct usbtmc_file_data *file_data,
 				void __user *arg)
 {
-	__u64 transferred;
-	int retval;
+	u32 transferred;
+	ssize_t retval;
 
 	spin_lock_irq(&file_data->err_lock);
 	transferred = file_data->out_transfer_size;
 	retval = file_data->out_status;
 	spin_unlock_irq(&file_data->err_lock);
 
-	if (put_user(transferred, (__u64 __user *)arg))
+	if (put_user(transferred, (__u32 __user *)arg))
 		return -EFAULT;
 
 	return retval;
@@ -1367,7 +1371,7 @@ static ssize_t usbtmc_ioctl_write_result(struct usbtmc_file_data *file_data,
  * Also updates bTag_last_write.
  */
 static int send_request_dev_dep_msg_in(struct usbtmc_file_data *file_data,
-				       size_t transfer_size)
+				       u32 transfer_size)
 {
 	struct usbtmc_device_data *data = file_data->data;
 	int retval;
@@ -1423,12 +1427,12 @@ static ssize_t usbtmc_read(struct file *filp, char __user *buf,
 	struct usbtmc_file_data *file_data;
 	struct usbtmc_device_data *data;
 	struct device *dev;
-	const size_t bufsize = USBTMC_BUFSIZE;
+	const u32 bufsize = USBTMC_BUFSIZE;
 	u32 n_characters;
 	u8 *buffer;
 	int actual;
-	u64 done = 0;
-	u64 remaining;
+	u32 done = 0;
+	u32 remaining;
 	int retval;
 
 	/* Get pointer to private data structure */
@@ -1524,12 +1528,10 @@ static ssize_t usbtmc_read(struct file *filp, char __user *buf,
 			usbtmc_ioctl_abort_bulk_in(data);
 		goto exit;
 	}
-
-
+#if VERBOSE
 	print_hex_dump_debug("usbtmc ", DUMP_PREFIX_NONE,
 			     16, 1, buffer, actual, true);
-
-
+#endif
 	remaining = n_characters;
 
 	/* Remove the USBTMC header */
@@ -1576,7 +1578,7 @@ static ssize_t usbtmc_write(struct file *filp, const char __user *buf,
 	struct urb *urb = NULL;
 	ssize_t retval = 0;
 	u8 *buffer;
-	u64 remaining, done;
+	u32 remaining, done;
 	u32 transfersize, aligned, buflen;
 
 	file_data = filp->private_data;
@@ -1589,7 +1591,6 @@ static ssize_t usbtmc_write(struct file *filp, const char __user *buf,
 		goto exit;
 	}
 
-	remaining = count;
 	done = 0;
 
 	spin_lock_irq(&file_data->err_lock);
@@ -1597,7 +1598,7 @@ static ssize_t usbtmc_write(struct file *filp, const char __user *buf,
 	file_data->out_status = 0;
 	spin_unlock_irq(&file_data->err_lock);
 
-	if (!remaining)
+	if (!count)
 		goto exit;
 
 	if (down_trylock(&file_data->limit_write_sem)) {
@@ -1616,11 +1617,11 @@ static ssize_t usbtmc_write(struct file *filp, const char __user *buf,
 	buffer = urb->transfer_buffer;
 	buflen = urb->transfer_buffer_length;
 
-	if (remaining > INT_MAX) {
+	if (count > INT_MAX) {
 		transfersize = INT_MAX;
 		buffer[8] = 0;
 	} else {
-		transfersize = remaining;
+		transfersize = count;
 		buffer[8] = file_data->eom_val;
 	}
 
@@ -1638,6 +1639,8 @@ static ssize_t usbtmc_write(struct file *filp, const char __user *buf,
 	buffer[10] = 0; /* Reserved */
 	buffer[11] = 0; /* Reserved */
 
+	remaining = transfersize;
+
 	if (transfersize + USBTMC_HEADER_SIZE > buflen) {
 		transfersize = buflen - USBTMC_HEADER_SIZE;
 		aligned = buflen;
@@ -1653,13 +1656,10 @@ static ssize_t usbtmc_write(struct file *filp, const char __user *buf,
 
 	dev_dbg(&data->intf->dev, "%s(size:%u align:%u)\n", __func__,
 		(unsigned int)transfersize, (unsigned int)aligned);
-
-
+#if VERBOSE
 	print_hex_dump_debug("usbtmc ", DUMP_PREFIX_NONE,
 			     16, 1, buffer, aligned, true);
-
-
-
+#endif
 	usb_fill_bulk_urb(urb, data->usb_dev,
 		usb_sndbulkpipe(data->usb_dev, data->bulk_out),
 		urb->transfer_buffer, aligned,
@@ -1681,6 +1681,7 @@ static ssize_t usbtmc_write(struct file *filp, const char __user *buf,
 	if (!data->bTag)
 		data->bTag++;
 
+	/* call generic_write even when remaining = 0 */
 	retval = usbtmc_generic_write(file_data, buf + transfersize, remaining,
 				      &done, USBTMC_FLAG_APPEND);
 	/* truncate alignment bytes */
@@ -1777,10 +1778,10 @@ usbtmc_clear_check_status:
 							  data->bulk_in),
 					  buffer, USBTMC_BUFSIZE,
 					  &actual, USB_CTRL_GET_TIMEOUT);
-
+#if VERBOSE
 			print_hex_dump_debug("usbtmc ", DUMP_PREFIX_NONE,
 					     16, 1, buffer, actual, true);
-
+#endif
 			n++;
 
 			if (rv < 0) {

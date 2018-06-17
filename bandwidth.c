@@ -46,7 +46,7 @@ unsigned int get_stb() {
 static int tmc_raw_write_common(char *msg, __u32 length, __u32 *written, int async) 
 {
 	struct usbtmc_message data;
-	__u64 total = 0;
+	__u32 total = 0;
 	int retval = 0;
 	__u32 addflag = (async)?(USBTMC_FLAG_ASYNC):0;
 	char buf[1024]; 
@@ -126,7 +126,7 @@ static int tmc_raw_write_async(char *msg, __u32 length, __u32 *written)
 
 static int tmc_raw_write_result_async(__u32 *written)
 {
-	__u64 transferred;
+	__u32 transferred;
 	/* Be careful: transferred size includes header and up to 3 padded bytes */
 	int retval = ioctl(fd, USBTMC_IOCTL_WRITE_RESULT, &transferred);
 	if (written)
@@ -194,7 +194,7 @@ static int tmc_raw_read_async_start(__u32 max_len)
 int tmc_raw_read_async_result(char *msg, __u32 max_len, __u32 *received) 
 {
 	struct usbtmc_message data;
-	__u64 total = 0;
+	__u32 total = 0;
 	__u32 expected_size = 0;
 	char *buf;
 	int retval;
@@ -218,13 +218,15 @@ int tmc_raw_read_async_result(char *msg, __u32 max_len, __u32 *received)
 	}
 	
 	if (data.transferred < HEADER_SIZE) {
+		printf("tmc_raw_read: response < HEADER_SIZE\n");
 		retval = -EPROTO;
 		goto exit;
 	}
 	data.transferred -= HEADER_SIZE;
 
 	if (buf[0] != 2) {
-		retval = -EPROTO; /* response out of order */
+		printf("tmc_raw_read: response out of order\n");
+		retval = -EPROTO;
 		goto exit;
 	}
 	
@@ -237,6 +239,7 @@ int tmc_raw_read_async_result(char *msg, __u32 max_len, __u32 *received)
 
 	expected_size = le32toh(*(__u32*)&buf[4]);
 	if (expected_size > max_len || data.transferred > expected_size) {
+		printf("tmc_raw_read: more data than requested \n");
 		retval = -EPROTO; /* more data than requested */
 		goto exit;
 	}
@@ -342,7 +345,7 @@ exit:
 static int tmc_raw_read(char *msg, __u32 max_len, __u32 *received) 
 {
 	struct usbtmc_message data;
-	__u64 total = 0;
+	__u32 total = 0;
 	__u32 expected_size = 0;
 	char request[HEADER_SIZE];
 	char *buf;
