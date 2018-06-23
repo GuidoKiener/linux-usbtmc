@@ -616,12 +616,12 @@ static int usbtmc488_ioctl_read_stb(struct usbtmc_file_data *file_data,
 }
 
 static int usbtmc488_ioctl_wait_srq(struct usbtmc_file_data *file_data,
-				    unsigned int __user *arg)
+				    __u32 __user *arg)
 {
 	struct usbtmc_device_data *data = file_data->data;
 	struct device *dev = &data->intf->dev;
 	int rv;
-	unsigned int timeout;
+	u32 timeout;
 	unsigned long expire;
 
 	if (!data->iin_ep_present) {
@@ -2115,7 +2115,7 @@ static int usbtmc_ioctl_request32(struct usbtmc_device_data *data,
 	if (res)
 		return -EFAULT;
 
-	buffer = kmalloc(max_t(u16, 256, request.req.wLength), GFP_KERNEL);
+	buffer = kmalloc(request.req.wLength, GFP_KERNEL);
 	if (!buffer)
 		return -ENOMEM;
 
@@ -2174,7 +2174,7 @@ static int usbtmc_ioctl_request(struct usbtmc_device_data *data,
 	if (res)
 		return -EFAULT;
 
-	buffer = kmalloc(max_t(u16, 256, request.req.wLength), GFP_KERNEL);
+	buffer = kmalloc(request.req.wLength, GFP_KERNEL);
 	if (!buffer)
 		return -ENOMEM;
 
@@ -2445,7 +2445,7 @@ static long usbtmc_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 
 	case USBTMC488_IOCTL_WAIT_SRQ:
 		retval = usbtmc488_ioctl_wait_srq(file_data,
-						  (unsigned int __user *)arg);
+						  (__u32 __user *)arg);
 		break;
 
 	case USBTMC_IOCTL_MSG_IN_ATTR:
