@@ -148,8 +148,8 @@ struct usbtmc_file_data {
 	u8             bmTransferAttributes; /* member of DEV_DEP_MSG_IN */
 
 	/* These values are initialized with default values from device_data */
-	u8             TermChar;
-	bool           TermCharEnabled;
+	u8             term_char;
+	bool           term_char_enabled;
 	bool           auto_abort;
 	u8             eom_val;
 
@@ -238,8 +238,8 @@ static int usbtmc_open(struct inode *inode, struct file *filp)
 
 	/* copy default values from device settings */
 	file_data->timeout = USBTMC_TIMEOUT;
-	file_data->TermChar = data->TermChar;
-	file_data->TermCharEnabled = data->TermCharEnabled;
+	file_data->term_char = data->TermChar;
+	file_data->term_char_enabled = data->TermCharEnabled;
 	file_data->auto_abort = data->auto_abort;
 	file_data->eom_val = 1;
 
@@ -1392,9 +1392,9 @@ static int send_request_dev_dep_msg_in(struct usbtmc_file_data *file_data,
 	buffer[5] = transfer_size >> 8;
 	buffer[6] = transfer_size >> 16;
 	buffer[7] = transfer_size >> 24;
-	buffer[8] = file_data->TermCharEnabled * 2;
+	buffer[8] = file_data->term_char_enabled * 2;
 	/* Use term character? */
-	buffer[9] = file_data->TermChar;
+	buffer[9] = file_data->term_char;
 	buffer[10] = 0; /* Reserved */
 	buffer[11] = 0; /* Reserved */
 
@@ -2272,7 +2272,7 @@ static int usbtmc_ioctl_eom_enable(struct usbtmc_file_data *file_data,
 }
 
 /*
- * Configure TermChar and TermCharEnable
+ * Configure termination character
  */
 static int usbtmc_ioctl_config_termc(struct usbtmc_file_data *file_data,
 				void __user *arg)
@@ -2287,8 +2287,8 @@ static int usbtmc_ioctl_config_termc(struct usbtmc_file_data *file_data,
 		!(file_data->data->capabilities.device_capabilities & 1)))
 		return -EINVAL;
 
-	file_data->TermChar = termc.term_char;
-	file_data->TermCharEnabled = termc.term_char_enabled;
+	file_data->term_char = termc.term_char;
+	file_data->term_char_enabled = termc.term_char_enabled;
 
 	return 0;
 }
