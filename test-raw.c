@@ -1089,7 +1089,7 @@ int main () {
   req.req.wIndex = 0;
   req.req.wLength = MAX_BL;
   req.data = buf;
-  
+
   memset(buf,0, MAX_BL);
   rv = ioctl(fd, USBTMC_IOCTL_CTRL_REQUEST, &req);
   if (rv < 0) {
@@ -1100,7 +1100,26 @@ int main () {
 		printf("%c", buf[i]);
 	printf("\n");
   }
-	
+
+  /* Remote wakeup */
+  req.req.bRequestType = USB_DIR_OUT | USB_TYPE_STANDARD | USB_RECIP_DEVICE;
+  req.req.bRequest = USB_REQ_CLEAR_FEATURE;
+  req.req.wValue = 1; // Remote Wakeup
+  req.req.wIndex = 0;
+  req.req.wLength = 0;
+  req.data = buf;
+
+  memset(buf,0, MAX_BL);
+  rv = ioctl(fd, USBTMC_IOCTL_CTRL_REQUEST, &req);
+  if (rv < 0) {
+	printf("request failed: rv=%d errno=%d\n", rv, errno);
+  } else {
+	/* Sorry. There is a better way to print wchar_t */
+	for (i=2; i < rv; i+=2)
+		printf("%c", buf[i]);
+	printf("\n");
+  }
+
   printf("done\n");
   close(fd);
   exit(0);
