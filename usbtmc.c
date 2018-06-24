@@ -2408,6 +2408,20 @@ skip_io_on_zombie:
 	return retval;
 }
 
+#ifdef CONFIG_COMPAT
+static long usbtmc_compat_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
+{
+	switch (cmd) {
+	case USBTMC_IOCTL_CTRL_REQUEST:
+	case USBTMC_IOCTL_WRITE:
+	case USBTMC_IOCTL_READ:
+		return -EBADRQC;
+	}
+	
+	return usbtmc_ioctl(file, cmd, (unsigned long)compat_ptr(arg));
+}
+#endif
+
 static int usbtmc_fasync(int fd, struct file *file, int on)
 {
 	struct usbtmc_file_data *file_data = file->private_data;
@@ -2467,7 +2481,7 @@ static const struct file_operations fops = {
 	.flush		= usbtmc_flush,
 	.unlocked_ioctl	= usbtmc_ioctl,
 #ifdef CONFIG_COMPAT
-	.compat_ioctl	= usbtmc_ioctl,
+	.compat_ioctl	= usbtmc_compat_ioctl,
 #endif
 	.fasync         = usbtmc_fasync,
 	.poll           = usbtmc_poll,
