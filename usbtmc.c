@@ -141,11 +141,10 @@ struct usbtmc_file_data {
 	atomic_t       closing;
 	u8             bmTransferAttributes; /* member of DEV_DEP_MSG_IN */
 
-	/* These values are initialized with default values from device_data */
+	u8             eom_val;
 	u8             term_char;
 	bool           term_char_enabled;
 	bool           auto_abort;
-	u8             eom_val;
 
 	spinlock_t     err_lock; /* lock for errors */
 
@@ -305,7 +304,7 @@ static int usbtmc_release(struct inode *inode, struct file *file)
 }
 
 static int usbtmc_ioctl_abort_bulk_in_tag(struct usbtmc_device_data *data,
-					  u8 bTag)
+					  u8 tag)
 {
 	u8 *buffer;
 	struct device *dev;
@@ -322,7 +321,7 @@ static int usbtmc_ioctl_abort_bulk_in_tag(struct usbtmc_device_data *data,
 			     usb_rcvctrlpipe(data->usb_dev, 0),
 			     USBTMC_REQUEST_INITIATE_ABORT_BULK_IN,
 			     USB_DIR_IN | USB_TYPE_CLASS | USB_RECIP_ENDPOINT,
-			     bTag, data->bulk_in,
+			     tag, data->bulk_in,
 			     buffer, 2, USB_CTRL_GET_TIMEOUT);
 
 	if (rv < 0) {
@@ -433,7 +432,7 @@ static int usbtmc_ioctl_abort_bulk_in(struct usbtmc_device_data *data)
 }
 
 static int usbtmc_ioctl_abort_bulk_out_tag(struct usbtmc_device_data *data,
-					   u8 bTag)
+					   u8 tag)
 {
 	struct device *dev;
 	u8 *buffer;
@@ -450,7 +449,7 @@ static int usbtmc_ioctl_abort_bulk_out_tag(struct usbtmc_device_data *data,
 			     usb_rcvctrlpipe(data->usb_dev, 0),
 			     USBTMC_REQUEST_INITIATE_ABORT_BULK_OUT,
 			     USB_DIR_IN | USB_TYPE_CLASS | USB_RECIP_ENDPOINT,
-			     bTag, data->bulk_out,
+			     tag, data->bulk_out,
 			     buffer, 2, USB_CTRL_GET_TIMEOUT);
 
 	if (rv < 0) {
@@ -781,6 +780,7 @@ static void usbtmc_read_bulk_cb(struct urb *urb)
 {
 	struct usbtmc_file_data *file_data = urb->context;
 	int status = urb->status;
+	unsigned long flags;
 
 	/* sync/async unlink faults aren't errors */
 	if (status) {
@@ -792,19 +792,19 @@ static void usbtmc_read_bulk_cb(struct urb *urb)
 			"%s - nonzero read bulk status received: %d\n",
 			__func__, status);
 
-		spin_lock(&file_data->err_lock);
+		spin_lock_irqsave(&file_data->err_lock, flags);
 		if (!file_data->in_status)
 			file_data->in_status = status;
-		spin_unlock(&file_data->err_lock);
+		spin_unlock_irqrestore(&file_data->err_lock, flags);
 	}
 
-	spin_lock(&file_data->err_lock);
+	spin_lock_irqsave(&file_data->err_lock, flags);
 	file_data->in_transfer_size += urb->actual_length;
 	dev_dbg(&file_data->data->intf->dev,
 		"%s - total size: %u current: %d status: %d\n",
 		__func__, file_data->in_transfer_size,
 		urb->actual_length, status);
-	spin_unlock(&file_data->err_lock);
+	spin_unlock_irqrestore(&file_data->err_lock, flags);
 	usb_anchor_urb(urb, &file_data->in_anchor);
 
 	wake_up_interruptible(&file_data->wait_bulk_in);
@@ -1105,8 +1105,9 @@ static void usbtmc_write_bulk_cb(struct urb *urb)
 {
 	struct usbtmc_file_data *file_data = urb->context;
 	int wakeup = 0;
+	unsigned long flags;
 
-	spin_lock(&file_data->err_lock);
+	spin_lock_irqsave(&file_data->err_lock, flags);
 	file_data->out_transfer_size += urb->actual_length;
 
 	/* sync/async unlink faults aren't errors */
@@ -1123,7 +1124,7 @@ static void usbtmc_write_bulk_cb(struct urb *urb)
 			wakeup = 1;
 		}
 	}
-	spin_unlock(&file_data->err_lock);
+	spin_unlock_irqrestore(&file_data->err_lock, flags);
 
 	dev_dbg(&file_data->data->intf->dev,
 		"%s - write bulk total size: %u\n",
@@ -2185,7 +2186,7 @@ static int usbtmc_ioctl_set_timeout(struct usbtmc_file_data *file_data,
 static int usbtmc_ioctl_eom_enable(struct usbtmc_file_data *file_data,
 				void __user *arg)
 {
-	__u8 eom_enable;
+	u8 eom_enable;
 
 	if (copy_from_user(&eom_enable, arg, sizeof(eom_enable)))
 		return -EFAULT;
@@ -2199,7 +2200,7 @@ static int usbtmc_ioctl_eom_enable(struct usbtmc_file_data *file_data,
 }
 
 /*
- * Configure termination character
+ * Configure termination character for read()
  */
 static int usbtmc_ioctl_config_termc(struct usbtmc_file_data *file_data,
 				void __user *arg)
@@ -2409,7 +2410,8 @@ skip_io_on_zombie:
 }
 
 #ifdef CONFIG_COMPAT
-static long usbtmc_compat_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
+static long usbtmc_compat_ioctl(struct file *file, unsigned int cmd,
+				unsigned long arg)
 {
 	switch (cmd) {
 	case USBTMC_IOCTL_CTRL_REQUEST:
@@ -2417,7 +2419,7 @@ static long usbtmc_compat_ioctl(struct file *file, unsigned int cmd, unsigned lo
 	case USBTMC_IOCTL_READ:
 		return -EBADRQC;
 	}
-	
+
 	return usbtmc_ioctl(file, cmd, (unsigned long)compat_ptr(arg));
 }
 #endif
@@ -2465,7 +2467,7 @@ static unsigned int usbtmc_poll(struct file *file, poll_table *wait)
 		mask |= POLLERR;
 	spin_unlock_irq(&file_data->err_lock);
 
-	dev_dbg(&data->intf->dev, "poll mask = %x\n", (unsigned int)mask);
+	dev_dbg(&data->intf->dev, "poll mask = %x\n", mask);
 
 no_poll:
 	mutex_unlock(&data->io_mutex);
@@ -2516,13 +2518,14 @@ static void usbtmc_interrupt(struct urb *urb)
 		}
 		/* check for SRQ notification */
 		if (data->iin_buffer[0] == 0x81) {
+			unsigned long flags;
 			struct list_head *elem;
 
 			if (data->fasync)
 				kill_fasync(&data->fasync,
 					SIGIO, POLL_PRI);
 
-			spin_lock(&data->dev_lock);
+			spin_lock_irqsave(&data->dev_lock, flags);
 			list_for_each(elem, &data->file_list) {
 				struct usbtmc_file_data *file_data;
 
@@ -2532,7 +2535,7 @@ static void usbtmc_interrupt(struct urb *urb)
 				file_data->srq_byte = data->iin_buffer[1];
 				atomic_set(&file_data->srq_asserted, 1);
 			}
-			spin_unlock(&data->dev_lock);
+			spin_unlock_irqrestore(&data->dev_lock, flags);
 
 			dev_dbg(dev, "srq received bTag %x stb %x\n",
 				(unsigned int)data->iin_buffer[0],
