@@ -2047,14 +2047,22 @@ static int usbtmc_ioctl_request32(struct usbtmc_device_data *data,
 	if (!buffer)
 		return -ENOMEM;
 
-	if ((request.req.bRequestType & USB_DIR_IN) == 0
-	    && request.req.wLength) {
-		/* Send control data to device */
-		res = copy_from_user(buffer, compat_ptr(request.data),
-				     request.req.wLength);
-		if (res) {
-			rv = -EFAULT;
-			goto exit;
+	if (request.req.wLength > USBTMC_BUFSIZE)
+		return -EMSGSIZE;
+
+	if (request.req.wLength) {
+		buffer = kmalloc(request.req.wLength, GFP_KERNEL);
+		if (!buffer)
+			return -ENOMEM;
+
+		if ((request.req.bRequestType & USB_DIR_IN) == 0) {
+			/* Send control data to device */
+			res = copy_from_user(buffer, compat_ptr(request.data),
+					     request.req.wLength);
+			if (res) {
+				rv = -EFAULT;
+				goto exit;
+			}
 		}
 	}
 
@@ -2070,14 +2078,9 @@ static int usbtmc_ioctl_request32(struct usbtmc_device_data *data,
 		dev_err(dev, "%s failed %d\n", __func__, rv);
 		goto exit;
 	}
-	if ((request.req.bRequestType & USB_DIR_IN)) {
-		/* Read control data from device */
-		if (rv > request.req.wLength) {
-			dev_warn(dev, "%s returned too much data: %d\n",
-				 __func__, rv);
-			rv = request.req.wLength;
-		}
 
+	if (rv && (request.req.bRequestType & USB_DIR_IN)) {
+		/* Read control data from device */
 		res = copy_to_user(compat_ptr(request.data), buffer, rv);
 		if (res)
 			rv = -EFAULT;
@@ -2085,6 +2088,7 @@ static int usbtmc_ioctl_request32(struct usbtmc_device_data *data,
 
  exit:
 	kfree(buffer);
+
 	return rv;
 }
 #endif
@@ -2102,17 +2106,22 @@ static int usbtmc_ioctl_request(struct usbtmc_device_data *data,
 	if (res)
 		return -EFAULT;
 
-	buffer = kmalloc(request.req.wLength, GFP_KERNEL);
-	if (!buffer)
-		return -ENOMEM;
+	if (request.req.wLength > USBTMC_BUFSIZE)
+		return -EMSGSIZE;
 
-	if ((request.req.bRequestType & USB_DIR_IN) == 0
-	    && request.req.wLength) {
-		res = copy_from_user(buffer, request.data,
-				     request.req.wLength);
-		if (res) {
-			rv = -EFAULT;
-			goto exit;
+	if (request.req.wLength) {
+		buffer = kmalloc(request.req.wLength, GFP_KERNEL);
+		if (!buffer)
+			return -ENOMEM;
+
+		if ((request.req.bRequestType & USB_DIR_IN) == 0) {
+			/* Send control data to device */
+			res = copy_from_user(buffer, request.data,
+					     request.req.wLength);
+			if (res) {
+				rv = -EFAULT;
+				goto exit;
+			}
 		}
 	}
 
@@ -2128,13 +2137,9 @@ static int usbtmc_ioctl_request(struct usbtmc_device_data *data,
 		dev_err(dev, "%s failed %d\n", __func__, rv);
 		goto exit;
 	}
-	if ((request.req.bRequestType & USB_DIR_IN)) {
-		if (rv > request.req.wLength) {
-			dev_warn(dev, "%s returned too much data: %d\n",
-				 __func__, rv);
-			rv = request.req.wLength;
-		}
 
+	if (rv && (request.req.bRequestType & USB_DIR_IN)) {
+		/* Read control data from device */
 		res = copy_to_user(request.data, buffer, rv);
 		if (res)
 			rv = -EFAULT;
@@ -2142,6 +2147,7 @@ static int usbtmc_ioctl_request(struct usbtmc_device_data *data,
 
  exit:
 	kfree(buffer);
+
 	return rv;
 }
 

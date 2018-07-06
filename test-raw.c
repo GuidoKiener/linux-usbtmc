@@ -1112,14 +1112,35 @@ int main () {
   memset(buf,0, MAX_BL);
   rv = ioctl(fd, USBTMC_IOCTL_CTRL_REQUEST, &req);
   if (rv < 0) {
-	printf("request failed: rv=%d errno=%d\n", rv, errno);
-  } else {
-	/* Sorry. There is a better way to print wchar_t */
-	for (i=2; i < rv; i+=2)
-		printf("%c", buf[i]);
-	printf("\n");
+	printf("out request size 0 failed: rv=%d errno=%d\n", rv, errno);
   }
 
+#if 1 // just test sending longer control data
+  req.req.wLength = 10;
+  req.data = sBigSend;
+  rv = ioctl(fd, USBTMC_IOCTL_CTRL_REQUEST, &req);
+  if (rv < 0) {
+	printf("request size 10 failed: rv=%d errno=%d\n", rv, errno);
+  }
+
+  req.req.wLength = 0xFF;
+  rv = ioctl(fd, USBTMC_IOCTL_CTRL_REQUEST, &req);
+  if (rv < 0) {
+	printf("out request size FF failed: rv=%d errno=%d\n", rv, errno);
+  }
+
+  req.req.wLength = 0x1000;
+  rv = ioctl(fd, USBTMC_IOCTL_CTRL_REQUEST, &req);
+  if (rv < 0) {
+	printf("out request size 4k failed: rv=%d errno=%d\n", rv, errno);
+  }
+
+  req.req.wLength = 0x1001;
+  rv = ioctl(fd, USBTMC_IOCTL_CTRL_REQUEST, &req);
+  if (rv >= 0) {
+	printf("out request size 4k+1 did not fail: rv=%d errno=%d\n", rv, errno);
+  }
+#endif
   printf("done\n");
   close(fd);
   exit(0);
