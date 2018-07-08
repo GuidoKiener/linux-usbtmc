@@ -2088,7 +2088,6 @@ static int usbtmc_ioctl_request32(struct usbtmc_device_data *data,
 
  exit:
 	kfree(buffer);
-
 	return rv;
 }
 #endif
@@ -2147,7 +2146,6 @@ static int usbtmc_ioctl_request(struct usbtmc_device_data *data,
 
  exit:
 	kfree(buffer);
-
 	return rv;
 }
 
@@ -2345,7 +2343,7 @@ static long usbtmc_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 
 	case USBTMC_IOCTL_API_VERSION:
 		retval = put_user(USBTMC_API_VERSION,
-				  (unsigned int __user *)arg);
+				  (__u32 __user *)arg);
 		break;
 
 	case USBTMC488_IOCTL_GET_CAPS:
