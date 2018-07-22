@@ -1,6 +1,7 @@
 
 #include <sys/ioctl.h>
 #include <sys/time.h>
+#include <stdint.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <poll.h>
@@ -75,7 +76,7 @@ static int tmc_raw_write_common(char *msg, __u32 length, __u32 *written, int asy
 	buf[10] = 0; /* Reserved */
 	buf[11] = 0; /* Reserved */
 
-	data.message = buf;
+	data.message = (__u64)(uintptr_t)buf;
 	data.transfer_size = length + HEADER_SIZE; /* 32 bit alignment done by driver */
 	
 	if (data.transfer_size <= sizeof(buf)) {
@@ -93,7 +94,7 @@ static int tmc_raw_write_common(char *msg, __u32 length, __u32 *written, int asy
 		goto exit;
 
 	assert(data.transferred == sizeof(buf));
-	data.message = msg + (sizeof(buf) - HEADER_SIZE);
+	data.message = (__u64)(uintptr_t)msg + (sizeof(buf) - HEADER_SIZE);
 	data.transfer_size = length - (sizeof(buf) - HEADER_SIZE);
 	data.flags = (USBTMC_FLAG_APPEND | addflag); /* append and wait*/
 	retval = ioctl(fd, USBTMC_IOCTL_WRITE, &data);
@@ -170,7 +171,7 @@ static int tmc_raw_read_async_start(__u32 max_len)
 	request[10] = 0; /* Reserved */
 	request[11] = 0; /* Reserved */
 
-	data.message = request;
+	data.message = (__u64)(uintptr_t)request;
 	data.transfer_size = HEADER_SIZE;
 	data.flags = USBTMC_FLAG_ASYNC; /* async */
 
@@ -179,7 +180,7 @@ static int tmc_raw_read_async_start(__u32 max_len)
 	if (retval < 0)
 		return retval;
 
-	data.message = NULL; /* just trigger asynchronous read */
+	data.message = (__u64)(uintptr_t)NULL; /* just trigger asynchronous read */
 	data.transfer_size = BULKSIZE;
 	data.flags = USBTMC_FLAG_ASYNC; /* sync */
 	retval = ioctl(fd,USBTMC_IOCTL_READ, &data);
@@ -206,7 +207,7 @@ int tmc_raw_read_async_result(char *msg, __u32 max_len, __u32 *received)
 	if (!buf)
 		return -ENOMEM;
 	
-	data.message = buf;
+	data.message = (__u64)(uintptr_t)buf;
 	/* Attention! must be multiple of BULKSIZE otherwise urb data is truncated.
 	 * Note that kernel driver only wants to copy a complete urb.
 	 */
@@ -244,14 +245,14 @@ int tmc_raw_read_async_result(char *msg, __u32 max_len, __u32 *received)
 		goto exit;
 	}
 
-	memcpy(msg, (char*)data.message + HEADER_SIZE, data.transferred);
+	memcpy(msg, (char*)(uintptr_t)data.message + HEADER_SIZE, data.transferred);
 	total = data.transferred;
 	expected_size -= data.transferred;
 	
 	if (retval == 0) {
 		// No short packet or ZLP received => ready
 		do {
-			data.message = msg + total;
+			data.message = (__u64)(uintptr_t)msg + total;
 			data.transfer_size = expected_size;
 			data.flags = USBTMC_FLAG_ASYNC|USBTMC_FLAG_IGNORE_TRAILER;
 			retval = ioctl(fd,USBTMC_IOCTL_READ, &data);
