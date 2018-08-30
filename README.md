@@ -158,7 +158,7 @@ In opposite to the poll() function (see above) the ioctl does not return
 when asynchronous operations fail.
 
 ```C
-static int wait_for_srq(unsigned int timeout) {
+static int wait_for_srq(int fd, unsigned int timeout) {
 	return ioctl(fd, USBTMC488_IOCTL_WAIT_SRQ, &timeout);
 }
 ```
@@ -177,7 +177,7 @@ for REN_CONTROL, GO_TO_LOCAL and LOCAL_LOCKOUT
 ### ioctl to cause a device to trigger
 
 This is equivalent to the IEEE 488 GET (Group Execute Trigger) action.
-While a the "*TRG" command can be sent to perform the same operation,
+While the "*TRG" command can be sent to perform the same operation,
 in some situations an instrument will be busy and unable to process
 the command immediately in which case the USBTMC488_IOCTL_TRIGGER can
 be used. 
@@ -191,11 +191,10 @@ tmc.h include file.
 
 ### ioctl's to set/get the usb timeout value
 
-Separate ioctl's to set and get the usb timeout value for a device.
-By default the timeout is set to 5000 milliseconds unless changed by
-the ***usb_timeout*** module parameter.
+Separate ioctl's to set and get the I/O timeout value for specific file handle.
+By default the timeout is set to 5000 milliseconds.
 
-USBTMC_IOCTL_SET_TIMEOUT will return with error EINVAL if timeout < 500
+USBTMC_IOCTL_SET_TIMEOUT will return with error EINVAL if timeout < 100
 
 Example
 
@@ -273,10 +272,10 @@ The ioctl function uses the following struct to send generic OUT bulk messages:
 #define USBTMC_FLAG_APPEND	0x0002
 
 struct usbtmc_message {
-	void *message; /* pointer to header and data */
-	__u64 transfer_size; /* size of bytes to transfer */
-	__u64 transferred; /* size of received/written bytes */
+	__u32 transfer_size; /* size of bytes to transfer */
+	__u32 transferred; /* size of received/written bytes */
 	__u32 flags; /* bit 0: 0 = synchronous; 1 = asynchronous */
+	__u64 message; /* pointer to header and data in user space */
 } __attribute__ ((packed));
 ```
 In synchronous mode (flags=0) the generic write function sends the *message* with
@@ -303,7 +302,8 @@ POLLERR is set when any urb fails. See poll() function above.
 
 ### New for IVI: ioctl USBTMC_IOCTL_WRITE_RESULT
 The ioctl function copies the current *internal transfer counter* to the 
-given __u64 pointer and returns the current error state. The error state
+given __u32 pointer and returns the current error state of the last
+(asynchronous) USBTMC_IOCTL_WRITE call. The error state
 and *internal transfer counter* is not cleared by this ioctl.
 
 
@@ -314,10 +314,10 @@ The ioctl function uses the following struct to get generic IN bulk messages:
 #define USBTMC_FLAG_IGNORE_TRAILER 0x0004
 
 struct usbtmc_message {
-	void *message; /* pointer to header and data */
-	__u64 transfer_size; /* size of bytes to transfer */
-	__u64 transferred; /* size of received/written bytes */
+	__u32 transfer_size; /* size of bytes to transfer */
+	__u32 transferred; /* size of received/written bytes */
 	__u32 flags; /* bit 0: 0 = synchronous; 1 = asynchronous */
+	__u64 message; /* pointer to header and data in user space */
 } __attribute__ ((packed));
 ```
 In synchronous mode (flags=0) the generic read function copies max. 
@@ -378,6 +378,8 @@ transferred data.
 This ioctl function kills all submitted urbs to OUT and IN pipe, and clears all 
 received data from IN pipe. The *Internal transfer counters* and error states are
 reset.
+An application should use this ioctl after an asnychronous transfer
+was canceled and/or error handling has finished.
 
 ### New for IVI: ioctl USBTMC_IOCTL_SET_OUT_HALT
 For testing: This ioctl sends a SET_FEATURE(HALT) request to the OUT endpoint. 
@@ -397,6 +399,17 @@ For testing: The ioctl tries to abort a BULK OUT transfer with a given tag.
 
 ### New for IVI: ioctl USBTMC_IOCTL_AUTO_ABORT
 Enable/Disable the auto_abort feature. auto_abort is disabled by default.
+
+### New for IVI: ioctl USBTMC_IOCTL_API_VERSION
+Returns current API version of usbtmc driver.
+
+This is to allow an instrument library to determine whether
+the driver API is compatible with the implementation.
+
+The API may change in future versions. Therefore the macro
+USBTMC_API_VERSION should be incremented when changing tmc.h
+with new flags, ioctls or when changing a significant behavior
+of the driver.
 
 
 ## Issues and enhancement requests
