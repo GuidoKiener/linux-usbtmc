@@ -163,29 +163,24 @@ struct usbtmc_file_data {
 	wait_queue_head_t wait_bulk_in;
 };
 
-#ifdef CONFIG_COMPAT
-
-struct compat_usbtmc_ctrlrequest {
-	struct usbtmc_request req;
-	compat_uptr_t data;
-} __packed;
-
-struct compat_usbtmc_message {
-	__u32 transfer_size;
-	__u32 transferred;
-	__u32 flags;
-	compat_uptr_t message;
-} __packed;
-
-#define USBTMC_IOCTL_CTRL_REQUEST32	_IOWR(USBTMC_IOC_NR, 8, struct compat_usbtmc_ctrlrequest)
-#define USBTMC_IOCTL_WRITE32		_IOWR(USBTMC_IOC_NR, 13, struct compat_usbtmc_message)
-#define USBTMC_IOCTL_READ32		_IOWR(USBTMC_IOC_NR, 14, struct compat_usbtmc_message)
-
-#endif
-
 /* Forward declarations */
 static struct usb_driver usbtmc_driver;
 static void usbtmc_draw_down(struct usbtmc_file_data *file_data);
+
+#ifdef CONFIG_COMPAT
+static void __user *u64_to_uptr(u64 value)
+{
+	if (in_compat_syscall())
+		return compat_ptr(value);
+	else
+		return (void __user *)(unsigned long)value;
+}
+#else
+static inline void __user *u64_to_uptr(u64 value)
+{
+	return (void __user *)(unsigned long)value;
+}
+#endif /* CONFIG_COMPAT */
 
 static void usbtmc_delete(struct kref *kref)
 {
@@ -1056,7 +1051,7 @@ error:
 }
 
 static ssize_t usbtmc_ioctl_generic_read(struct usbtmc_file_data *file_data,
-					  void __user *arg)
+					 void __user *arg)
 {
 	struct usbtmc_message msg;
 	ssize_t retval = 0;
@@ -1066,40 +1061,16 @@ static ssize_t usbtmc_ioctl_generic_read(struct usbtmc_file_data *file_data,
 	if (copy_from_user(&msg, arg, sizeof(struct usbtmc_message)))
 		return -EFAULT;
 
-	retval = usbtmc_generic_read(file_data, msg.message,
+	retval = usbtmc_generic_read(file_data, u64_to_uptr(msg.message),
 				      msg.transfer_size, &msg.transferred,
 				      msg.flags);
 
 	if (put_user(msg.transferred,
-		     &((struct usbtmc_message __user *)arg)->transferred))
+		   &((struct usbtmc_message __user *)arg)->transferred))
 		return -EFAULT;
 
 	return retval;
 }
-
-#ifdef CONFIG_COMPAT
-static ssize_t usbtmc_ioctl_generic_read32(struct usbtmc_file_data *file_data,
-					   void __user *arg)
-{
-	struct compat_usbtmc_message msg;
-	compat_ssize_t retval = 0;
-
-	/* mutex already locked */
-
-	if (copy_from_user(&msg, arg, sizeof(struct compat_usbtmc_message)))
-		return -EFAULT;
-
-	retval = usbtmc_generic_read(file_data, compat_ptr(msg.message),
-				      msg.transfer_size, &msg.transferred,
-				      msg.flags);
-
-	if (put_user(msg.transferred,
-		   &((struct compat_usbtmc_message __user *)arg)->transferred))
-		return -EFAULT;
-
-	return retval;
-}
-#endif
 
 static void usbtmc_write_bulk_cb(struct urb *urb)
 {
@@ -1301,40 +1272,16 @@ static ssize_t usbtmc_ioctl_generic_write(struct usbtmc_file_data *file_data,
 	if (copy_from_user(&msg, arg, sizeof(struct usbtmc_message)))
 		return -EFAULT;
 
-	retval = usbtmc_generic_write(file_data, msg.message,
+	retval = usbtmc_generic_write(file_data, u64_to_uptr(msg.message),
 				      msg.transfer_size, &msg.transferred,
 				      msg.flags);
 
 	if (put_user(msg.transferred,
-		     &((struct usbtmc_message __user *)arg)->transferred))
+		   &((struct usbtmc_message __user *)arg)->transferred))
 		return -EFAULT;
 
 	return retval;
 }
-
-#ifdef CONFIG_COMPAT
-static ssize_t usbtmc_ioctl_generic_write32(struct usbtmc_file_data *file_data,
-					    void __user *arg)
-{
-	struct compat_usbtmc_message msg;
-	ssize_t retval = 0;
-
-	/* mutex already locked */
-
-	if (copy_from_user(&msg, arg, sizeof(struct compat_usbtmc_message)))
-		return -EFAULT;
-
-	retval = usbtmc_generic_write(file_data, compat_ptr(msg.message),
-				      msg.transfer_size, &msg.transferred,
-				      msg.flags);
-
-	if (put_user(msg.transferred,
-		   &((struct compat_usbtmc_message __user *)arg)->transferred))
-		return -EFAULT;
-
-	return retval;
-}
-#endif
 
 /*
  * Get the generic write result
@@ -2028,18 +1975,16 @@ exit:
 	return rv;
 }
 
-#ifdef CONFIG_COMPAT
-static int usbtmc_ioctl_request32(struct usbtmc_device_data *data,
-				  void __user *arg)
+static int usbtmc_ioctl_request(struct usbtmc_device_data *data,
+				void __user *arg)
 {
 	struct device *dev = &data->intf->dev;
-	struct compat_usbtmc_ctrlrequest request;
+	struct usbtmc_ctrlrequest request;
 	u8 *buffer = NULL;
 	int rv;
 	unsigned long res;
 
-	res = copy_from_user(&request, arg,
-			     sizeof(struct compat_usbtmc_ctrlrequest));
+	res = copy_from_user(&request, arg, sizeof(struct usbtmc_ctrlrequest));
 	if (res)
 		return -EFAULT;
 
@@ -2057,7 +2002,7 @@ static int usbtmc_ioctl_request32(struct usbtmc_device_data *data,
 
 		if ((request.req.bRequestType & USB_DIR_IN) == 0) {
 			/* Send control data to device */
-			res = copy_from_user(buffer, compat_ptr(request.data),
+			res = copy_from_user(buffer, u64_to_uptr(request.data),
 					     request.req.wLength);
 			if (res) {
 				rv = -EFAULT;
@@ -2081,65 +2026,7 @@ static int usbtmc_ioctl_request32(struct usbtmc_device_data *data,
 
 	if (rv && (request.req.bRequestType & USB_DIR_IN)) {
 		/* Read control data from device */
-		res = copy_to_user(compat_ptr(request.data), buffer, rv);
-		if (res)
-			rv = -EFAULT;
-	}
-
- exit:
-	kfree(buffer);
-	return rv;
-}
-#endif
-
-static int usbtmc_ioctl_request(struct usbtmc_device_data *data,
-				void __user *arg)
-{
-	struct device *dev = &data->intf->dev;
-	struct usbtmc_ctrlrequest request;
-	u8 *buffer = NULL;
-	int rv;
-	unsigned long res;
-
-	res = copy_from_user(&request, arg, sizeof(struct usbtmc_ctrlrequest));
-	if (res)
-		return -EFAULT;
-
-	if (request.req.wLength > USBTMC_BUFSIZE)
-		return -EMSGSIZE;
-
-	if (request.req.wLength) {
-		buffer = kmalloc(request.req.wLength, GFP_KERNEL);
-		if (!buffer)
-			return -ENOMEM;
-
-		if ((request.req.bRequestType & USB_DIR_IN) == 0) {
-			/* Send control data to device */
-			res = copy_from_user(buffer, request.data,
-					     request.req.wLength);
-			if (res) {
-				rv = -EFAULT;
-				goto exit;
-			}
-		}
-	}
-
-	rv = usb_control_msg(data->usb_dev,
-			usb_rcvctrlpipe(data->usb_dev, 0),
-			request.req.bRequest,
-			request.req.bRequestType,
-			request.req.wValue,
-			request.req.wIndex,
-			buffer, request.req.wLength, USB_CTRL_GET_TIMEOUT);
-
-	if (rv < 0) {
-		dev_err(dev, "%s failed %d\n", __func__, rv);
-		goto exit;
-	}
-
-	if (rv && (request.req.bRequestType & USB_DIR_IN)) {
-		/* Read control data from device */
-		res = copy_to_user(request.data, buffer, rv);
+		res = copy_to_user(u64_to_uptr(request.data), buffer, rv);
 		if (res)
 			rv = -EFAULT;
 	}
@@ -2286,12 +2173,6 @@ static long usbtmc_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		retval = usbtmc_ioctl_request(data, (void __user *)arg);
 		break;
 
-#ifdef CONFIG_COMPAT
-	case USBTMC_IOCTL_CTRL_REQUEST32:
-		retval = usbtmc_ioctl_request32(data, (void __user *)arg);
-		break;
-#endif
-
 	case USBTMC_IOCTL_GET_TIMEOUT:
 		retval = usbtmc_ioctl_get_timeout(file_data,
 						  (void __user *)arg);
@@ -2317,24 +2198,10 @@ static long usbtmc_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 						    (void __user *)arg);
 		break;
 
-#ifdef CONFIG_COMPAT
-	case USBTMC_IOCTL_WRITE32:
-		retval = usbtmc_ioctl_generic_write32(file_data,
-						      (void __user *)arg);
-		break;
-#endif
-
 	case USBTMC_IOCTL_READ:
 		retval = usbtmc_ioctl_generic_read(file_data,
 						   (void __user *)arg);
 		break;
-
-#ifdef CONFIG_COMPAT
-	case USBTMC_IOCTL_READ32:
-		retval = usbtmc_ioctl_generic_read32(file_data,
-						     (void __user *)arg);
-		break;
-#endif
 
 	case USBTMC_IOCTL_WRITE_RESULT:
 		retval = usbtmc_ioctl_write_result(file_data,
@@ -2413,21 +2280,6 @@ skip_io_on_zombie:
 	return retval;
 }
 
-#ifdef CONFIG_COMPAT
-static long usbtmc_compat_ioctl(struct file *file, unsigned int cmd,
-				unsigned long arg)
-{
-	switch (cmd) {
-	case USBTMC_IOCTL_CTRL_REQUEST:
-	case USBTMC_IOCTL_WRITE:
-	case USBTMC_IOCTL_READ:
-		return -EBADRQC;
-	}
-
-	return usbtmc_ioctl(file, cmd, (unsigned long)compat_ptr(arg));
-}
-#endif
-
 static int usbtmc_fasync(int fd, struct file *file, int on)
 {
 	struct usbtmc_file_data *file_data = file->private_data;
@@ -2487,7 +2339,7 @@ static const struct file_operations fops = {
 	.flush		= usbtmc_flush,
 	.unlocked_ioctl	= usbtmc_ioctl,
 #ifdef CONFIG_COMPAT
-	.compat_ioctl	= usbtmc_compat_ioctl,
+	.compat_ioctl	= usbtmc_ioctl,
 #endif
 	.fasync         = usbtmc_fasync,
 	.poll           = usbtmc_poll,
