@@ -411,6 +411,34 @@ USBTMC_API_VERSION should be incremented when changing tmc.h
 with new flags, ioctls or when changing a significant behavior
 of the driver.
 
+## Applied patches to Linux Kernel
+
+1. Remove rigol_quirk
+https://patchwork.kernel.org/patch/10407097/
+
+2. Support Read Status Byte with SRQ per file
+https://patchwork.kernel.org/patch/10531567/
+
+3. Use consistent timeout error
+https://patchwork.kernel.org/patch/10531557/
+
+4. Add ioctls to set/get usb timeout
+https://patchwork.kernel.org/patch/10531551/
+
+5. Add ioctl for trigger
+https://patchwork.kernel.org/patch/10531537/
+
+6. Add ioctl for EOM bit
+https://patchwork.kernel.org/patch/10531575/
+
+7. Add ioctl for termination character
+https://patchwork.kernel.org/patch/10531577/
+
+Open patches are:
+
+8. Changes needed for compatible IVI/VISA library
+https://patchwork.kernel.org/cover/10554819/
+
 
 ## Issues and enhancement requests
 
