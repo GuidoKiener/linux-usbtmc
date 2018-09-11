@@ -167,21 +167,6 @@ struct usbtmc_file_data {
 static struct usb_driver usbtmc_driver;
 static void usbtmc_draw_down(struct usbtmc_file_data *file_data);
 
-#ifdef CONFIG_COMPAT
-static void __user *u64_to_uptr(u64 value)
-{
-	if (in_compat_syscall())
-		return compat_ptr(value);
-	else
-		return (void __user *)(unsigned long)value;
-}
-#else
-static inline void __user *u64_to_uptr(u64 value)
-{
-	return (void __user *)(unsigned long)value;
-}
-#endif /* CONFIG_COMPAT */
-
 static void usbtmc_delete(struct kref *kref)
 {
 	struct usbtmc_device_data *data = to_usbtmc_data(kref);
@@ -1061,12 +1046,12 @@ static ssize_t usbtmc_ioctl_generic_read(struct usbtmc_file_data *file_data,
 	if (copy_from_user(&msg, arg, sizeof(struct usbtmc_message)))
 		return -EFAULT;
 
-	retval = usbtmc_generic_read(file_data, u64_to_uptr(msg.message),
-				      msg.transfer_size, &msg.transferred,
-				      msg.flags);
+	retval = usbtmc_generic_read(file_data, msg.message,
+				     msg.transfer_size, &msg.transferred,
+				     msg.flags);
 
 	if (put_user(msg.transferred,
-		   &((struct usbtmc_message __user *)arg)->transferred))
+		     &((struct usbtmc_message __user *)arg)->transferred))
 		return -EFAULT;
 
 	return retval;
@@ -1272,12 +1257,12 @@ static ssize_t usbtmc_ioctl_generic_write(struct usbtmc_file_data *file_data,
 	if (copy_from_user(&msg, arg, sizeof(struct usbtmc_message)))
 		return -EFAULT;
 
-	retval = usbtmc_generic_write(file_data, u64_to_uptr(msg.message),
+	retval = usbtmc_generic_write(file_data, msg.message,
 				      msg.transfer_size, &msg.transferred,
 				      msg.flags);
 
 	if (put_user(msg.transferred,
-		   &((struct usbtmc_message __user *)arg)->transferred))
+		     &((struct usbtmc_message __user *)arg)->transferred))
 		return -EFAULT;
 
 	return retval;
@@ -1290,7 +1275,7 @@ static ssize_t usbtmc_ioctl_write_result(struct usbtmc_file_data *file_data,
 				void __user *arg)
 {
 	u32 transferred;
-	ssize_t retval;
+	int retval;
 
 	spin_lock_irq(&file_data->err_lock);
 	transferred = file_data->out_transfer_size;
@@ -2002,8 +1987,7 @@ static int usbtmc_ioctl_request(struct usbtmc_device_data *data,
 
 		if ((request.req.bRequestType & USB_DIR_IN) == 0) {
 			/* Send control data to device */
-			res = copy_from_user(buffer, u64_to_uptr(request.data),
-					     request.req.wLength);
+			res = copy_from_user(buffer, request.data, request.req.wLength);
 			if (res) {
 				rv = -EFAULT;
 				goto exit;
@@ -2026,7 +2010,7 @@ static int usbtmc_ioctl_request(struct usbtmc_device_data *data,
 
 	if (rv && (request.req.bRequestType & USB_DIR_IN)) {
 		/* Read control data from device */
-		res = copy_to_user(u64_to_uptr(request.data), buffer, rv);
+		res = copy_to_user(request.data, buffer, rv);
 		if (res)
 			rv = -EFAULT;
 	}
