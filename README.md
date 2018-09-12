@@ -437,8 +437,7 @@ https://patchwork.kernel.org/patch/10531577/
 Open patches are:
 
 8. Changes needed for compatible IVI/VISA library
-https://patchwork.kernel.org/cover/10554819/
-
+https://patchwork.kernel.org/cover/10596935/
 
 ## Issues and enhancement requests
 
