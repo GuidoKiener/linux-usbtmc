@@ -1973,10 +1973,6 @@ static int usbtmc_ioctl_request(struct usbtmc_device_data *data,
 	if (res)
 		return -EFAULT;
 
-	buffer = kmalloc(request.req.wLength, GFP_KERNEL);
-	if (!buffer)
-		return -ENOMEM;
-
 	if (request.req.wLength > USBTMC_BUFSIZE)
 		return -EMSGSIZE;
 
