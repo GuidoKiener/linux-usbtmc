@@ -434,10 +434,11 @@ https://patchwork.kernel.org/patch/10531575/
 7. Add ioctl for termination character
 https://patchwork.kernel.org/patch/10531577/
 
-Open patches are:
-
 8. Changes needed for compatible IVI/VISA library
 https://patchwork.kernel.org/cover/10596935/
+
+9. Fix changes for compatible IVI/VISA library
+https://patchwork.kernel.org/cover/10612963/
 
 ## Issues and enhancement requests
 
